@@ -1,35 +1,88 @@
 #!/bin/bash
-# Runs INSIDE the cross container (droidvm-mesa-cross). Bind mounts:
-#   /work/mesa  = mesa source for ONE variant   /work/cross = this dir   /work/out = repo root
-# Cross-compiles mesa (native x86 -> aarch64) with the SAME meson options as the native
-# 8_build_guest_mesa.sh -- both read them from mesa-variants.sh, so there is one list.
+# Configure, build and package ONE guest mesa variant. This is the single implementation of
+# those three steps; 8_build_guest_mesa_cross.sh runs it inside the cross container and
+# 8_build_guest_mesa.sh runs it directly on an aarch64 box, so the two paths cannot drift.
 #
-# The caller passes the variant and bind-mounts that variant's worktree at /work/mesa.
+# Cross (default), bind mounts:
+#   /work/mesa = the variant's worktree   /work/cross = this dir   /work/out = repo root
+# Native: set MESA_NATIVE=1, WORK_MESA=<worktree> and WORK_OUT=<repo root>; no cross file.
+#
+#   build-in-container.sh <gfxstream|kgsl> <package-version>
 set -e
-V=${1:?usage: build-in-container.sh <gfxstream|kgsl>}
-source /work/out/mesa-variants.sh
+V=${1:?usage: build-in-container.sh <gfxstream|kgsl> <package-version>}
+PKGVER=${2:?missing package version}
+OUT=${WORK_OUT:-/work/out}
+SRC=${WORK_MESA:-/work/mesa}
+source "$OUT/mesa-variants.sh"
 
-cd /work/mesa
+cd "$SRC"
 
-# Resolve every dependency against the arm64 packages only.
-export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+pkg=$(mesa_variant_pkg "$V")
+deb="${pkg}_${PKGVER}_arm64.deb"
 
-prefix=$(mesa_variant_prefix "$V")
-tarball=$(mesa_variant_tarball "$V")
+if [ -n "${MESA_NATIVE:-}" ]; then
+    cross=()
+else
+    # Resolve every dependency against the arm64 packages only.
+    export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    cross=(--cross-file "${WORK_CROSS:-/work/cross}/aarch64-linux-gnu.meson")
+fi
 
 rm -rf build-cross
-meson setup build-cross \
-    --cross-file /work/cross/aarch64-linux-gnu.meson \
-    --prefix "$prefix" \
+meson setup build-cross "${cross[@]}" \
     "${MESA_COMMON_MESON[@]}" $(mesa_variant_meson "$V")
+
+# The whole point of -Dglvnd=enabled is that both variants agree; a silent fallback to the
+# non-GLVND layout would put a differently-shaped libEGL in the guest and only show up later.
+grep -Eq 'GLVND[[:space:]]*:[[:space:]]*YES' build-cross/meson-logs/meson-log.txt || {
+    echo "error: meson did not enable GLVND" >&2; exit 1; }
 
 ninja -C build-cross
 rm -rf install-cross
 DESTDIR="$PWD/install-cross" ninja -C build-cross install
 
-tar -czf "/work/out/$tarball" -C install-cross .
-echo "wrote $tarball (variant $V, prefix $prefix)"
+# Sanity before packaging: the shipped .so's must be aarch64, not x86.
+so=$(find install-cross -name '*.so*' -type f | head -1)
+file -b "$so" | grep -q aarch64 || { echo "error: $so is not aarch64: $(file -b "$so")" >&2; exit 1; }
+find install-cross -type f -name 'libEGL_mesa.so*' -print -quit | grep -q . || {
+    echo "error: no libEGL_mesa.so -- GLVND layout missing" >&2; exit 1; }
 
-# Sanity: the shipped .so's must be aarch64, not x86.
-so=$(find install-cross -name '*.so' | head -1)
-echo "arch check: $(file -b "$so" 2>/dev/null | cut -d, -f1-2)"
+# Both variants install to /usr/local and therefore collide. Conflicts/Provides/Replaces on a
+# shared virtual name makes dpkg refuse the second install instead of overwriting the first:
+# both ship libgallium, the desktop composites through gallium rather than the Vulkan ICD, and
+# the overwrite is invisible until the whole screen is black.
+install -d -m 0755 install-cross/DEBIAN
+installed_size=$(du -sk install-cross | cut -f1)
+cat > install-cross/DEBIAN/control <<EOF
+Package: ${pkg}
+Version: ${PKGVER}
+Section: libs
+Priority: optional
+Architecture: arm64
+Installed-Size: ${installed_size}
+Maintainer: Droid-VM <noreply@github.com>
+Depends: libc6, libdrm2, libexpat1, libgcc-s1, libglvnd0, libstdc++6, libudev1, libvulkan1, libwayland-client0, libwayland-egl1, libwayland-server0, libx11-6, libx11-xcb1, libxcb1, libxcb-dri2-0, libxcb-dri3-0, libxcb-glx0, libxcb-present0, libxcb-randr0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxdamage1, libxext6, libxrandr2, libxshmfence1, libxxf86vm1, libzstd1, zlib1g
+Provides: mesa-guest
+Conflicts: mesa-guest
+Replaces: mesa-guest
+Description: Guest Mesa for Droid-VM (${V} route)
+ Mesa guest libraries with the ${V} Vulkan driver, the Zink Gallium driver and
+ the GLVND vendor libraries. Installs to /usr/local; set VK_DRIVER_FILES to
+ $(mesa_variant_icd "$V").
+ .
+ Only one mesa-guest-* package can be installed at a time: they share a prefix.
+EOF
+cat > install-cross/DEBIAN/postinst <<'EOF'
+#!/bin/sh
+set -e
+ldconfig
+EOF
+cat > install-cross/DEBIAN/postrm <<'EOF'
+#!/bin/sh
+set -e
+ldconfig
+EOF
+chmod 0755 install-cross/DEBIAN/postinst install-cross/DEBIAN/postrm
+
+dpkg-deb --root-owner-group --build install-cross "$OUT/$deb"
+echo "wrote $deb (variant $V, ICD $(mesa_variant_icd "$V"))"

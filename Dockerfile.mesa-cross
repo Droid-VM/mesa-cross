@@ -35,6 +35,7 @@ RUN apt-get install -y --no-install-recommends \
       libxcb-sync-dev:arm64 libxcb-randr0-dev:arm64 libxcb-shm0-dev:arm64 \
       libxcb-xfixes0-dev:arm64 libxcb-glx0-dev:arm64 libxcb-dri2-0-dev:arm64 \
       libexpat1-dev:arm64 zlib1g-dev:arm64 libvulkan-dev:arm64 \
-      libudev-dev:arm64
+      libudev-dev:arm64 \
+      libglvnd-dev:arm64 libzstd-dev:arm64
 
 WORKDIR /work
