@@ -1,11 +1,11 @@
 #!/bin/bash
 # The two guest mesa builds, in one place.
 #
-# gfxstream's ICD talks to the host gfxstream decoder over the vulkan-command wire; kgsl's
+# gfxstream's ICD talks to the host gfxstream decoder over the vulkan-command wire; drm2kgsl's
 # turnip talks to virglrenderer's DRM native context over vdrm. They come from two branches of
 # Droid-VM/mesa with unrelated upstreams: 26.0.3 for gfxstream, because the guest ICD and the
-# host decoder are one codebase and must match, and 26.3.0-devel for kgsl, which carries the
-# tu/virtio work.
+# host decoder are one codebase and must match, and 26.3.0-devel for drm2kgsl, which carries
+# the tu/virtio work.
 #
 # BOTH install to /usr/local, because a guest tests one route at a time. That means their files
 # collide, which is exactly why these are .deb rather than a tarball: the two packages Conflict,
@@ -36,18 +36,19 @@ MESA_COMMON_MESON=(
 mesa_variant_branch() {
     case $1 in
         gfxstream) echo wip/3d-accel-gfxstream ;;
-        kgsl)      echo wip/3d-accel-kgsl ;;
+        drm2kgsl)      echo wip/3d-accel-drm2kgsl ;;
         *) echo "unknown mesa variant: $1" >&2; return 1 ;;
     esac
 }
 
-# Driver selection. gfxstream: the guest ICD that pairs with the host decoder. kgsl: real turnip
-# reaching the GPU through virtio (msm kept alongside so the same build also runs on bare metal
-# for an A/B).
+# Driver selection. gfxstream: the guest ICD that pairs with the host decoder. drm2kgsl: real
+# turnip reaching the GPU through virtio (msm kept alongside so the same build also runs on bare
+# metal for an A/B). The variant is named for the host translation, not for the guest driver:
+# turnip here speaks msm over vdrm and never touches a KGSL device of its own.
 mesa_variant_meson() {
     case $1 in
         gfxstream) echo "-Dvulkan-drivers=gfxstream" ;;
-        kgsl)      echo "-Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,virtio" ;;
+        drm2kgsl)      echo "-Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,virtio" ;;
         *) echo "unknown mesa variant: $1" >&2; return 1 ;;
     esac
 }
@@ -56,7 +57,7 @@ mesa_variant_pkg()  { echo "mesa-guest-$1"; }
 mesa_variant_icd()  {
     case $1 in
         gfxstream) echo "/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json" ;;
-        kgsl)      echo "/usr/local/share/vulkan/icd.d/freedreno_icd.aarch64.json" ;;
+        drm2kgsl)      echo "/usr/local/share/vulkan/icd.d/freedreno_icd.aarch64.json" ;;
     esac
 }
 
@@ -69,8 +70,8 @@ mesa_variants() {
     fi
     case "${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}" in
         *-gfxstream) echo gfxstream ;;
-        *-kgsl)      echo kgsl ;;
-        *)           echo "gfxstream kgsl" ;;
+        *-drm2kgsl)      echo drm2kgsl ;;
+        *)           echo "gfxstream drm2kgsl" ;;
     esac
 }
 

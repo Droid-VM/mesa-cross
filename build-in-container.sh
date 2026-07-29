@@ -7,9 +7,9 @@
 #   /work/mesa = the variant's worktree   /work/cross = this dir   /work/out = repo root
 # Native: set MESA_NATIVE=1, WORK_MESA=<worktree> and WORK_OUT=<repo root>; no cross file.
 #
-#   build-in-container.sh <gfxstream|kgsl> <package-version>
+#   build-in-container.sh <gfxstream|drm2kgsl> <package-version>
 set -e
-V=${1:?usage: build-in-container.sh <gfxstream|kgsl> <package-version>}
+V=${1:?usage: build-in-container.sh <gfxstream|drm2kgsl> <package-version>}
 PKGVER=${2:?missing package version}
 OUT=${WORK_OUT:-/work/out}
 SRC=${WORK_MESA:-/work/mesa}
