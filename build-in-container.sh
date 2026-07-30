@@ -66,6 +66,42 @@ find install-cross -type f -name 'libEGL_mesa.so*' -print -quit | grep -q . || {
 # shared virtual name makes dpkg refuse the second install instead of overwriting the first:
 # both ship libgallium, the desktop composites through gallium rather than the Vulkan ICD, and
 # the overwrite is invisible until the whole screen is black.
+# Ship the environment this build needs instead of leaving it to whoever installs the package.
+#
+# MESA_LOADER_DRIVER_OVERRIDE is not optional and not a tuning knob. Both variants are built
+# -Dgallium-drivers=zink, so neither ships a driver named for the guest's kernel driver; the DRI
+# names in dri/ are all symlinks to libdril_dri.so, and pipe_loader then picks the pipe driver
+# from the kernel driver name -- virgl for virtio_gpu, which is not built here. Without the
+# override GNOME Shell gets "virtio_gpu: driver missing", falls back to kms_swrast, and fails with
+# "Failed to setup: No GPUs found", so gdm retries the greeter until it gives up. Vulkan works the
+# whole time, which is what makes it look like a gdm fault.
+#
+# VK_DRIVER_FILES is not strictly required -- the loader already searches /usr/local/share/vulkan
+# -- but pinning it keeps the distro's software ICDs (lavapipe) out of the enumeration. An app
+# quietly choosing llvmpipe is slow rather than broken, which is the hardest kind of regression to
+# notice.
+#
+# Two files because they cover different entry points, and neither is a conffile the admin owns:
+# environment.d reaches systemd user sessions (the gdm greeter, GNOME, anything the session
+# starts), profile.d reaches shell logins. Editing /etc/environment from a script covers both but
+# is the admin's file, and a sed that rewrites it can drop a line it did not put there.
+icd=$(mesa_variant_icd "$V")
+install -d -m 0755 install-cross/usr/lib/environment.d install-cross/etc/profile.d
+cat > install-cross/usr/lib/environment.d/50-mesa-guest.conf <<EOF
+# Installed by ${pkg}. See /usr/share/doc/${pkg}.
+MESA_LOADER_DRIVER_OVERRIDE=zink
+VK_DRIVER_FILES=${icd}
+VK_ICD_FILENAMES=${icd}
+EOF
+cat > install-cross/etc/profile.d/50-mesa-guest.sh <<EOF
+# Installed by ${pkg}.
+export MESA_LOADER_DRIVER_OVERRIDE=zink
+export VK_DRIVER_FILES=${icd}
+export VK_ICD_FILENAMES=${icd}
+EOF
+chmod 0644 install-cross/usr/lib/environment.d/50-mesa-guest.conf \
+           install-cross/etc/profile.d/50-mesa-guest.sh
+
 install -d -m 0755 install-cross/DEBIAN
 installed_size=$(du -sk install-cross | cut -f1)
 cat > install-cross/DEBIAN/control <<EOF
@@ -82,8 +118,9 @@ Conflicts: mesa-guest
 Replaces: mesa-guest
 Description: Guest Mesa for Droid-VM (${V} route)
  Mesa guest libraries with the ${V} Vulkan driver, the Zink Gallium driver and
- the GLVND vendor libraries. Installs to /usr/local; set VK_DRIVER_FILES to
- $(mesa_variant_icd "$V").
+ the GLVND vendor libraries. Installs to /usr/local, and ships the environment it
+ needs (MESA_LOADER_DRIVER_OVERRIDE, VK_DRIVER_FILES) in /usr/lib/environment.d
+ and /etc/profile.d, so a desktop comes up without any manual setup.
  .
  Only one mesa-guest-* package can be installed at a time: they share a prefix.
 EOF
