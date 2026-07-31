@@ -18,6 +18,10 @@ source "$OUT/mesa-variants.sh"
 cd "$SRC"
 
 pkg=$(mesa_variant_pkg "$V")
+# Naming the siblings, not just the shared virtual package, is what makes dpkg REMOVE the other
+# variant instead of refusing (Conflicts alone) or silently overwriting it (what --force-all did).
+# Conflicts + Replaces on a real package name is the "this supersedes that" pair.
+siblings=$(mesa_variant_siblings "$V")
 deb="${pkg}_${PKGVER}_arm64.deb"
 
 if [ -n "${MESA_NATIVE:-}" ]; then
@@ -62,8 +66,8 @@ fi
 find install-cross -type f -name 'libEGL_mesa.so*' -print -quit | grep -q . || {
     echo "error: no libEGL_mesa.so -- GLVND layout missing" >&2; exit 1; }
 
-# Both variants install to /usr/local and therefore collide. Conflicts/Provides/Replaces on a
-# shared virtual name makes dpkg refuse the second install instead of overwriting the first:
+# Both variants install to /usr/local and therefore collide. Conflicts/Replaces naming the OTHER
+# variants makes dpkg remove the previous one rather than overwriting the first:
 # both ship libgallium, the desktop composites through gallium rather than the Vulkan ICD, and
 # the overwrite is invisible until the whole screen is black.
 # Ship the environment this build needs instead of leaving it to whoever installs the package.
@@ -114,8 +118,8 @@ Installed-Size: ${installed_size}
 Maintainer: Droid-VM <noreply@github.com>
 Depends: libc6, libdrm2, libexpat1, libgcc-s1, libglvnd0, libstdc++6, libudev1, libvulkan1, libwayland-client0, libwayland-egl1, libwayland-server0, libx11-6, libx11-xcb1, libxcb1, libxcb-dri2-0, libxcb-dri3-0, libxcb-glx0, libxcb-present0, libxcb-randr0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxdamage1, libxext6, libxrandr2, libxshmfence1, libxxf86vm1, libzstd1, zlib1g
 Provides: mesa-guest
-Conflicts: mesa-guest
-Replaces: mesa-guest
+Conflicts: mesa-guest, ${siblings}
+Replaces: mesa-guest, ${siblings}
 Description: Guest Mesa for Droid-VM (${V} route)
  Mesa guest libraries with the ${V} Vulkan driver, the Zink Gallium driver and
  the GLVND vendor libraries. Installs to /usr/local, and ships the environment it

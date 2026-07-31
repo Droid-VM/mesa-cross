@@ -54,6 +54,25 @@ mesa_variant_meson() {
 }
 
 mesa_variant_pkg()  { echo "mesa-guest-$1"; }
+
+# Every package name a guest might already have installed from this family, EXCLUDING $1.
+# Emitted into the deb's Conflicts and Replaces so installing one variant removes the other
+# rather than overwriting its files behind dpkg's back.
+#
+# mesa-guest-kgsl is the pre-rename name of the drm2kgsl package. It is listed because guests
+# provisioned before the rename still carry it, and a stale copy is not harmless: the two
+# variants share 60 install paths but not all of them, so the leftovers of the loser stay on
+# disk -- and something that picks a route by asking whether a file exists then picks the wrong
+# one. That is not hypothetical; the benchmark harness chose the drm2kgsl launcher under
+# gfxstream exactly that way.
+mesa_variant_siblings() {
+    local self=$1 out=()
+    local all=(mesa-guest-gfxstream mesa-guest-drm2kgsl mesa-guest-kgsl)
+    for p in "${all[@]}"; do
+        [ "$p" = "mesa-guest-$self" ] || out+=("$p")
+    done
+    (IFS=,; echo "${out[*]}")
+}
 mesa_variant_icd()  {
     case $1 in
         gfxstream) echo "/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json" ;;
