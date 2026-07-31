@@ -14,7 +14,7 @@
 # overwrite shows up as a fully black VNC scanout with no error anywhere -- a failure this
 # project has already paid for once.
 #
-# Sourced by 8_build_guest_mesa.sh, 8_build_guest_mesa_cross.sh and (inside the container)
+# Sourced by the numbered mesa build scripts, mesa-cross/build-host.sh and (inside the container)
 # mesa-cross/build-in-container.sh.
 
 # Options both variants share. Anything that differs belongs in mesa_variant_meson.
@@ -33,10 +33,21 @@ MESA_COMMON_MESON=(
     -Dallow-fallback-for=perfetto
 )
 
+# The mesa branch for a variant is THIS repo's branch plus the variant suffix, rather than a
+# hardcoded pair. The two repos move together -- a meta branch describes which mesa to build, so
+# hardcoding the mesa branch means a new meta branch silently keeps building the old mesa.
+#
+# Any variant suffix already on the meta branch is stripped first, so running this from
+# wip/3d-accel-gfxstream asks for wip/3d-accel-gfxstream, not ...-gfxstream-gfxstream.
+mesa_base_branch() {
+    local b=${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}
+    b=${b%-gfxstream}; b=${b%-drm2kgsl}; b=${b%-kgsl}
+    printf '%s' "$b"
+}
+
 mesa_variant_branch() {
     case $1 in
-        gfxstream) echo wip/3d-accel-gfxstream ;;
-        drm2kgsl)      echo wip/3d-accel-drm2kgsl ;;
+        gfxstream|drm2kgsl) echo "$(mesa_base_branch)-$1" ;;
         *) echo "unknown mesa variant: $1" >&2; return 1 ;;
     esac
 }
@@ -77,20 +88,6 @@ mesa_variant_icd()  {
     case $1 in
         gfxstream) echo "/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json" ;;
         drm2kgsl)      echo "/usr/local/share/vulkan/icd.d/freedreno_icd.aarch64.json" ;;
-    esac
-}
-
-# Which variants to build. MESA_VARIANT wins; otherwise the meta repo's branch decides, and the
-# trunk builds both because both debs are wanted even though only one is installed at a time.
-mesa_variants() {
-    if [ -n "${MESA_VARIANT:-}" ]; then
-        echo "$MESA_VARIANT"
-        return
-    fi
-    case "${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}" in
-        *-gfxstream) echo gfxstream ;;
-        *-drm2kgsl)      echo drm2kgsl ;;
-        *)           echo "gfxstream drm2kgsl" ;;
     esac
 }
 
