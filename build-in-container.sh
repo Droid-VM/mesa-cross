@@ -3,15 +3,21 @@
 # implementation for both variants, so the two routes cannot drift apart in how they are built.
 #
 # Bind mounts:
-#   /work/mesa = the variant's worktree   /work/cross = this dir   /work/out = repo root
+#   /work/mesa  = the mesa checkout        /work/cross = this dir
+#   /work/out   = repo root, READ-ONLY     /work/deb   = where the .deb goes
+#
+# The repo root is mounted only for mesa-variants.sh (the one place the two variants' meson
+# options live) and is read-only, so a build cannot write anywhere except its own tree and the
+# output directory it was given.
 #
 #   build-in-container.sh <gfxstream|drm2kgsl> <package-version>
 set -e
 V=${1:?usage: build-in-container.sh <gfxstream|drm2kgsl> <package-version>}
 PKGVER=${2:?missing package version}
-OUT=${WORK_OUT:-/work/out}
+REPO=${WORK_OUT:-/work/out}
+DEBOUT=${WORK_DEBOUT:-/work/deb}
 SRC=${WORK_MESA:-/work/mesa}
-source "$OUT/mesa-variants.sh"
+source "$REPO/mesa-variants.sh"
 
 cd "$SRC"
 
@@ -62,4 +68,4 @@ find install-cross -type f -name 'libEGL_mesa.so*' -print -quit | grep -q . || {
     echo "error: no libEGL_mesa.so -- GLVND layout missing" >&2; exit 1; }
 
 # Packaging is package.sh's job, from this one staged tree.
-exec bash "${WORK_CROSS:-/work/cross}/package.sh" "$V" "$PKGVER" "$PWD/install-cross" "$OUT"
+exec bash "${WORK_CROSS:-/work/cross}/package.sh" "$V" "$PKGVER" "$PWD/install-cross" "$DEBOUT"
