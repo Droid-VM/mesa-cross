@@ -33,30 +33,63 @@ siblings=$(mesa_variant_siblings "$V")
 icd=$(mesa_variant_icd "$V")
 
 # ---------------------------------------------------------------------------
-# Environment, identical in both formats.
+# Environment, delivered through THREE channels because no single one reaches every entry point.
 #
-# Two files because they cover different entry points, and neither is a conffile the admin owns:
-# environment.d reaches systemd user sessions (the gdm greeter, GNOME, anything the session
-# starts), profile.d reaches shell logins. Editing /etc/environment would cover both but is the
-# admin's file, and a sed that rewrites it can drop a line it did not put there.
+#   /usr/lib/environment.d   systemd USER sessions -- GNOME, and the gdm greeter, which runs as one
+#   /etc/profile.d           login shells
+#   /etc/environment         PAM sessions, via pam_env -- everything else, notably display-manager
+#                            greeters that are NOT systemd user sessions
+#
+# The third one was added after a black screen on KDE/sddm that took a while to place. sddm spawns
+# its greeter from sddm-helper through PAM, not through `systemd --user`, so environment.d never
+# reached it; the greeter then could not create a GL context at all and sddm restarted it every six
+# seconds. Measured on the guest, greeter environment / crash count:
+#
+#   environment.d only            no MESA_LOADER_DRIVER_OVERRIDE, crash loop
+#   + sddm.service.d Environment= still none (sddm-helper rebuilds the env), crash loop
+#   + /etc/environment            present, crashes 3 -> 0, login screen renders
+#
+# MESA_LOADER_DRIVER_OVERRIDE is not a tuning knob. Both variants are built
+# -Dgallium-drivers=zink, so nothing in dri/ is named for the guest's kernel driver, and
+# pipe_loader asks for one named "virtio_gpu". Without the override it finds nothing:
+# "QGLXContext: Failed to create dummy context", and whatever needed GL dies.
 #
 # VK_DRIVER_FILES is not strictly required -- the loader already searches /usr/local/share/vulkan
 # -- but pinning it keeps the distro's software ICDs (lavapipe) out of the enumeration. An app
 # quietly choosing llvmpipe is slow rather than broken, which is the hardest kind of regression to
 # notice.
+#
+# /etc/environment IS the admin's file, and that is why it is edited from the maintainer scripts
+# inside named markers rather than shipped: postinst strips every mesa-guest block before adding
+# its own, postrm strips its own on removal, so nothing this package did not write is ever touched
+# and nothing it wrote is ever left behind. pam_env has no drop-in directory -- it reads only
+# /etc/environment and /etc/security/pam_env.conf, both conffiles of other packages -- so there is
+# no way to reach a PAM session without touching one of them.
 # ---------------------------------------------------------------------------
+#
+# KWIN_FORCE_SW_CURSOR is the odd one out: it is not a mesa setting at all. KWin puts the cursor
+# on a hardware DRM cursor plane by default, and on virtio-gpu here that plane never reaches the
+# screen -- the desktop renders correctly and the pointer is simply invisible, which reads as an
+# input problem rather than a display one. Forcing KWin to composite the cursor into the frame
+# fixes it, on both routes.
+#
+# It belongs to the virtio-gpu layer, i.e. droidvm-guest-additions, and it lives here only because
+# this is the package that has environment delivery. Move it if that package ever grows the same
+# three channels. (Harmless outside KWin: nothing else reads it.)
 install -d -m 0755 "$STAGE/usr/lib/environment.d" "$STAGE/etc/profile.d"
 cat > "$STAGE/usr/lib/environment.d/50-mesa-guest.conf" <<EOF
 # Installed by ${pkg}. See /usr/share/doc/${pkg}.
 MESA_LOADER_DRIVER_OVERRIDE=zink
 VK_DRIVER_FILES=${icd}
 VK_ICD_FILENAMES=${icd}
+KWIN_FORCE_SW_CURSOR=1
 EOF
 cat > "$STAGE/etc/profile.d/50-mesa-guest.sh" <<EOF
 # Installed by ${pkg}.
 export MESA_LOADER_DRIVER_OVERRIDE=zink
 export VK_DRIVER_FILES=${icd}
 export VK_ICD_FILENAMES=${icd}
+export KWIN_FORCE_SW_CURSOR=1
 EOF
 chmod 0644 "$STAGE/usr/lib/environment.d/50-mesa-guest.conf" "$STAGE/etc/profile.d/50-mesa-guest.sh"
 
@@ -78,13 +111,47 @@ Replaces: mesa-guest, ${siblings}
 Description: Guest Mesa for Droid-VM (${V} route)
  Mesa guest libraries with the ${V} Vulkan driver, the Zink Gallium driver and
  the GLVND vendor libraries. Installs to /usr/local, and ships the environment it
- needs (MESA_LOADER_DRIVER_OVERRIDE, VK_DRIVER_FILES) in /usr/lib/environment.d
- and /etc/profile.d, so a desktop comes up without any manual setup.
+ needs in /usr/lib/environment.d, /etc/profile.d and a marked block in
+ /etc/environment, so a desktop comes up without any manual setup -- the last of
+ those is what reaches a display-manager greeter, which is a PAM session rather
+ than a systemd user session.
  .
  Only one mesa-guest-* package can be installed at a time: they share a prefix.
 EOF
-printf '#!/bin/sh\nset -e\nldconfig\n' > "$root/DEBIAN/postinst"
-printf '#!/bin/sh\nset -e\nldconfig\n' > "$root/DEBIAN/postrm"
+# sed -i on /etc/environment, with the block delimited by markers naming THIS variant.
+# postinst strips EVERY mesa-guest block before appending its own: the two variants Conflict, so
+# at most one may survive, and this makes the swap converge whichever order dpkg runs the scripts
+# in. postrm strips only its own, so it cannot delete a block the other variant has just written.
+cat > "$root/DEBIAN/postinst" <<EOF
+#!/bin/sh
+set -e
+ldconfig
+[ "\$1" = configure ] || exit 0
+# pam_env reads /etc/environment, and a display-manager greeter is a PAM session rather than a
+# systemd user session -- this is the only channel that reaches one.
+if [ -f /etc/environment ]; then
+    sed -i '/^# BEGIN mesa-guest-/,/^# END mesa-guest-/d' /etc/environment
+else
+    : > /etc/environment
+fi
+cat >> /etc/environment <<'ENVEOF'
+# BEGIN mesa-guest-${V} (managed by ${pkg}; edits inside this block are lost on upgrade)
+MESA_LOADER_DRIVER_OVERRIDE=zink
+VK_DRIVER_FILES=${icd}
+VK_ICD_FILENAMES=${icd}
+KWIN_FORCE_SW_CURSOR=1
+# END mesa-guest-${V}
+ENVEOF
+EOF
+cat > "$root/DEBIAN/postrm" <<EOF
+#!/bin/sh
+set -e
+ldconfig
+case "\$1" in remove|purge) ;; *) exit 0 ;; esac
+[ -f /etc/environment ] || exit 0
+sed -i '/^# BEGIN mesa-guest-${V}/,/^# END mesa-guest-${V}/d' /etc/environment
+exit 0
+EOF
 chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/postrm"
 
 deb="${pkg}_${PKGVER}_arm64.deb"
