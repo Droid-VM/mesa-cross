@@ -155,18 +155,27 @@ ldconfig
 [ "\$1" = configure ] || exit 0
 # pam_env reads /etc/environment, and a display-manager greeter is a PAM session rather than a
 # systemd user session -- this is the only channel that reaches one.
+# Built beside the target and renamed over it, never appended to in place. An append that is
+# interrupted -- the VM losing power, which on this platform means the VMM crashing -- leaves the
+# file extended to its new length with the tail unwritten, which on ext4 reads back as NUL bytes.
+# pam_env then refuses the whole file, and the one channel that reaches a display manager's PAM
+# session goes silent while the other three stay correct. Seen exactly that: a desktop with no
+# driver override, on a guest whose environment.d and system.conf.d were both intact.
+umask 022
 if [ -f /etc/environment ]; then
-    sed -i '/^# BEGIN mesa-guest-/,/^# END mesa-guest-/d' /etc/environment
+    sed '/^# BEGIN mesa-guest-/,/^# END mesa-guest-/d' /etc/environment > /etc/environment.dpkg-new
 else
-    : > /etc/environment
+    : > /etc/environment.dpkg-new
 fi
-cat >> /etc/environment <<'ENVEOF'
+cat >> /etc/environment.dpkg-new <<'ENVEOF'
 # BEGIN mesa-guest-${V} (managed by ${pkg}; edits inside this block are lost on upgrade)
 MESA_LOADER_DRIVER_OVERRIDE=zink
 VK_DRIVER_FILES=${icd}
 VK_ICD_FILENAMES=${icd}
 # END mesa-guest-${V}
 ENVEOF
+sync /etc/environment.dpkg-new 2>/dev/null || true
+mv -f /etc/environment.dpkg-new /etc/environment
 # DefaultEnvironment is manager configuration, so PID 1 only picks up the file we just installed on
 # re-exec; daemon-reload does not re-read system.conf. Without this the display manager keeps the
 # environment it was started with until the next boot, which is exactly the case that was broken.
@@ -181,7 +190,8 @@ set -e
 ldconfig
 case "\$1" in remove|purge) ;; *) exit 0 ;; esac
 if [ -f /etc/environment ]; then
-    sed -i '/^# BEGIN mesa-guest-${V}/,/^# END mesa-guest-${V}/d' /etc/environment
+    sed '/^# BEGIN mesa-guest-${V}/,/^# END mesa-guest-${V}/d' /etc/environment \
+        > /etc/environment.dpkg-new && mv -f /etc/environment.dpkg-new /etc/environment
 fi
 # dpkg has removed our system.conf.d drop-in, but PID 1 still holds what it said -- including a
 # VK_DRIVER_FILES naming an ICD that no longer exists. Drop it the same way postinst applied it.
