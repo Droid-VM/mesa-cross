@@ -108,9 +108,24 @@ mesa_worktree() {
 # mesa_pkg_version <worktree> -- upstream mesa version + the commit it was built from, so a deb
 # on a guest can be traced back to a tree. git is not usable inside the container (a worktree's
 # .git is a file naming an absolute host path), so this runs on the host and is passed in.
+#
+# A commit count leads and the hash only identifies. A hash does not order: "+droidvm.cea49934" is
+# LOWER than "+droidvm.f80a84b5" whichever was built first, so installing a newer build needed
+# --allow-downgrades and apt would happily keep the older one. A count of commits only goes up, on
+# a branch that is never rewritten.
+#
+# The "r" is not decoration. Without it the new scheme would sort BELOW the old one already on
+# guests -- dpkg compares the letters of "cea49934" against the empty run in front of "250" and
+# letters win -- so every guest would need one more --allow-downgrades. A hash is hex, so it
+# starts with 0-9 or a-f; any letter after 'f' beats all of them and the transition is ordinary.
+#
+# The dirty suffix exists because an uncommitted change otherwise rebuilds to the same filename
+# with different contents. It sorts after that commit's clean build and before the next commit.
 mesa_pkg_version() {
-    local dir=$1 ver sha
+    local dir=$1 ver count sha dirty=""
     ver=$(tr -d '\n' < "$dir/VERSION")
+    count=$(git -C "$dir" rev-list --count HEAD 2>/dev/null || echo 0)
     sha=$(git -C "$dir" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
-    echo "${ver}+droidvm.${sha}"
+    git -C "$dir" diff --quiet HEAD -- 2>/dev/null || dirty="+dirty$(LC_ALL=C date -u '+%Y%m%d%H%M%S')"
+    echo "${ver}+droidvm.r${count}.g${sha}${dirty}"
 }
