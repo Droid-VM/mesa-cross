@@ -41,13 +41,13 @@ MESA_COMMON_MESON=(
 # wip/3d-accel-gfxstream asks for wip/3d-accel-gfxstream, not ...-gfxstream-gfxstream.
 mesa_base_branch() {
     local b=${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}
-    b=${b%-gfxstream}; b=${b%-drm2kgsl}; b=${b%-kgsl}
+    b=${b%-gfxstream}; b=${b%-drm2kgsl}; b=${b%-kgsl}; b=${b%-venus}
     printf '%s' "$b"
 }
 
 mesa_variant_branch() {
     case $1 in
-        gfxstream|drm2kgsl) echo "$(mesa_base_branch)-$1" ;;
+        gfxstream|drm2kgsl|venus) echo "$(mesa_base_branch)-$1" ;;
         *) echo "unknown mesa variant: $1" >&2; return 1 ;;
     esac
 }
@@ -60,6 +60,7 @@ mesa_variant_meson() {
     case $1 in
         gfxstream) echo "-Dvulkan-drivers=gfxstream" ;;
         drm2kgsl)      echo "-Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,virtio" ;;
+        venus)         echo "-Dvulkan-drivers=virtio" ;;
         *) echo "unknown mesa variant: $1" >&2; return 1 ;;
     esac
 }
@@ -78,7 +79,7 @@ mesa_variant_pkg()  { echo "mesa-guest-$1"; }
 # gfxstream exactly that way.
 mesa_variant_siblings() {
     local self=$1 out=()
-    local all=(mesa-guest-gfxstream mesa-guest-drm2kgsl mesa-guest-kgsl)
+    local all=(mesa-guest-gfxstream mesa-guest-drm2kgsl mesa-guest-kgsl mesa-guest-venus)
     for p in "${all[@]}"; do
         [ "$p" = "mesa-guest-$self" ] || out+=("$p")
     done
@@ -88,6 +89,7 @@ mesa_variant_icd()  {
     case $1 in
         gfxstream) echo "/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json" ;;
         drm2kgsl)      echo "/usr/local/share/vulkan/icd.d/freedreno_icd.aarch64.json" ;;
+        venus)         echo "/usr/local/share/vulkan/icd.d/virtio_icd.aarch64.json" ;;
     esac
 }
 
