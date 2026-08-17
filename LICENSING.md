@@ -1,7 +1,7 @@
 # Licensing
 
 Everything in this repository was written for DroidVM. It is licensed under
-the GNU GPL, version 3 or later (`LICENSE.GPL-3.0`), **with the additional
+the GNU GPL, version 2 or later (`LICENSE.GPL-2.0`), **with the additional
 permissions in `ADDITIONAL-PERMISSIONS`**.
 
 Those permissions exist so this work can go upstream. They let anyone

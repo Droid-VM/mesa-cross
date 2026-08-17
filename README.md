@@ -117,7 +117,7 @@ builds of the same branch (a hash does not sort); see `mesa_pkg_version` in
 
 ## Licensing
 
-Written for DroidVM: GNU GPL v3 or later **with the additional permissions in
+Written for DroidVM: GNU GPL v2 or later **with the additional permissions in
 `ADDITIONAL-PERMISSIONS`** (they let this material be relicensed for the sole
 purpose of taking it upstream). Sign-off is required for contributions; see
 `CONTRIBUTING.md`. mesa itself stays under its own (MIT) license — this repo
