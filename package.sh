@@ -8,20 +8,20 @@
 #
 # What has to be true on both, and why:
 #
-#   * The two variants share ~60 install paths (every kmsro *_dri.so, the gbm backend, libgallium)
-#     and are therefore mutually exclusive. Conflicts+Replaces naming the OTHER variant is what
+#   * The variants share ~60 install paths (every kmsro *_dri.so, the gbm backend, libgallium)
+#     and are therefore mutually exclusive. Conflicts+Replaces naming the OTHER variants is what
 #     makes dpkg REMOVE it rather than refuse (Conflicts alone) or silently overwrite it: both
 #     ship libgallium, the desktop composites through gallium rather than through the Vulkan ICD,
 #     and an overwrite is invisible until the whole screen is black.
 #
 #   * The environment is part of the package. MESA_LOADER_DRIVER_OVERRIDE=zink is not a tuning
-#     knob -- both variants are built -Dgallium-drivers=zink, so without it GNOME Shell gets
+#     knob -- every variant is built -Dgallium-drivers=zink, so without it GNOME Shell gets
 #     "virtio_gpu: driver missing", falls back to kms_swrast and fails with "No GPUs found", while
 #     Vulkan works the whole time and it looks like a gdm fault.
 set -euo pipefail
 
 # exec'd from build-in-container.sh, so the variant helpers have to be sourced again here.
-source "${WORK_OUT:-/work/out}/mesa-variants.sh"
+source "${WORK_CROSS:-/work/cross}/mesa-variants.sh"
 
 V=${1:?variant}
 PKGVER=${2:?version}
@@ -68,7 +68,7 @@ icd=$(mesa_variant_icd "$V")
 # each DM and would still only be half the answer. DefaultEnvironment is the system-service
 # counterpart of /etc/environment, and it does not care which DM is installed.
 #
-# MESA_LOADER_DRIVER_OVERRIDE is not a tuning knob. Both variants are built
+# MESA_LOADER_DRIVER_OVERRIDE is not a tuning knob. Every variant is built
 # -Dgallium-drivers=zink, so nothing in dri/ is named for the guest's kernel driver, and
 # pipe_loader asks for one named "virtio_gpu". Without the override it finds nothing:
 # "QGLXContext: Failed to create dummy context", and whatever needed GL dies.
@@ -145,7 +145,7 @@ Description: Guest Mesa for Droid-VM (${V} route)
  Only one mesa-guest-* package can be installed at a time: they share a prefix.
 EOF
 # sed -i on /etc/environment, with the block delimited by markers naming THIS variant.
-# postinst strips EVERY mesa-guest block before appending its own: the two variants Conflict, so
+# postinst strips EVERY mesa-guest block before appending its own: the variants Conflict, so
 # at most one may survive, and this makes the swap converge whichever order dpkg runs the scripts
 # in. postrm strips only its own, so it cannot delete a block the other variant has just written.
 cat > "$root/DEBIAN/postinst" <<EOF

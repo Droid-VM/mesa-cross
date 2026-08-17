@@ -1,25 +1,33 @@
 #!/bin/bash
-# The two guest mesa builds, in one place.
+# The guest mesa variants, in one place.
 #
-# gfxstream's ICD talks to the host gfxstream decoder over the vulkan-command wire; drm2kgsl's
-# turnip talks to virglrenderer's DRM native context over vdrm. They come from two branches of
-# Droid-VM/mesa with unrelated upstreams: 26.0.3 for gfxstream, because the guest ICD and the
-# host decoder are one codebase and must match, and 26.3.0-devel for drm2kgsl, which carries
-# the tu/virtio work.
+# Three routes, three Vulkan drivers, three branches of Droid-VM/mesa:
 #
-# BOTH install to /usr/local, because a guest tests one route at a time. That means their files
-# collide, which is exactly why these are .deb rather than a tarball: the two packages Conflict,
-# so dpkg refuses the second install instead of silently overwriting. Both ship libgallium, and
-# the desktop composites through gallium rather than through the Vulkan ICD, so a silent
-# overwrite shows up as a fully black VNC scanout with no error anywhere -- a failure this
-# project has already paid for once.
+#   gfxstream   the gfxstream guest ICD, talking to the host gfxstream decoder over the
+#               vulkan-command wire. Tracks 26.0.3, because the guest ICD and the host decoder
+#               are one codebase and must match.
+#   drm2kgsl    real turnip reaching the GPU through virglrenderer's DRM native context over
+#               vdrm. Tracks 26.3.0-devel, which carries the tu/virtio work -- an unrelated
+#               upstream line from the other two.
+#   venus       the venus (vn) ICD, speaking the venus wire protocol to virglrenderer's vkr on
+#               the host. Same 26.0.3 line as gfxstream.
 #
-# Sourced by the numbered mesa build scripts, mesa-cross/build-host.sh and (inside the container)
-# mesa-cross/build-in-container.sh.
+# ALL install to /usr/local, because a guest tests one route at a time. That means their files
+# collide, which is exactly why these are .deb rather than a tarball: the packages Conflict, so
+# dpkg refuses the second install instead of silently overwriting. All ship libgallium, and the
+# desktop composites through gallium rather than through the Vulkan ICD, so a silent overwrite
+# shows up as a fully black VNC scanout with no error anywhere -- a failure this project has
+# already paid for once.
+#
+# Sourced by the meta repo's lib_mesa_build.sh (numbered build scripts), by ci-build.sh (GitHub
+# Actions) and, inside the container, by build-in-container.sh and package.sh. Everything in here
+# is either pure data or works on a PATH it is given; nothing knows about worktrees or remotes.
 
-# Options both variants share. Anything that differs belongs in mesa_variant_meson.
+MESA_VARIANTS=(gfxstream drm2kgsl venus)
+
+# Options all variants share. Anything that differs belongs in mesa_variant_meson.
 # -Dglvnd=enabled matches the configuration Droid-VM/mesa's own CI validates; the danger is a
-# mixture, not either choice, so both variants take it.
+# mixture, not either choice, so every variant takes it.
 MESA_COMMON_MESON=(
     --buildtype release
     --prefix /usr/local
@@ -33,12 +41,14 @@ MESA_COMMON_MESON=(
     -Dallow-fallback-for=perfetto
 )
 
-# The mesa branch for a variant is THIS repo's branch plus the variant suffix, rather than a
-# hardcoded pair. The two repos move together -- a meta branch describes which mesa to build, so
-# hardcoding the mesa branch means a new meta branch silently keeps building the old mesa.
+# The mesa branch for a variant is the CALLER's branch plus the variant suffix, rather than a
+# hardcoded pair. The repos move together -- a meta/mesa-cross branch describes which mesa to
+# build, so hardcoding the mesa branch means a new branch silently keeps building the old mesa.
 #
-# Any variant suffix already on the meta branch is stripped first, so running this from
-# wip/3d-accel-gfxstream asks for wip/3d-accel-gfxstream, not ...-gfxstream-gfxstream.
+# The caller's branch is $BRANCH if set (the meta repo's lib_branch.sh sets it; ci-build.sh sets
+# it from the workflow input), else the branch of the repo we are being sourced from. Any variant
+# suffix already on it is stripped first, so running this from wip/3d-accel-gfxstream asks for
+# wip/3d-accel-gfxstream, not ...-gfxstream-gfxstream.
 mesa_base_branch() {
     local b=${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}
     b=${b%-gfxstream}; b=${b%-drm2kgsl}; b=${b%-kgsl}; b=${b%-venus}
@@ -54,13 +64,14 @@ mesa_variant_branch() {
 
 # Driver selection. gfxstream: the guest ICD that pairs with the host decoder. drm2kgsl: real
 # turnip reaching the GPU through virtio (msm kept alongside so the same build also runs on bare
-# metal for an A/B). The variant is named for the host translation, not for the guest driver:
-# turnip here speaks msm over vdrm and never touches a KGSL device of its own.
+# metal for an A/B). venus: the vn ICD. The drm2kgsl variant is named for the host translation,
+# not for the guest driver: turnip here speaks msm over vdrm and never touches a KGSL device of
+# its own.
 mesa_variant_meson() {
     case $1 in
         gfxstream) echo "-Dvulkan-drivers=gfxstream" ;;
-        drm2kgsl)      echo "-Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,virtio" ;;
-        venus)         echo "-Dvulkan-drivers=virtio" ;;
+        drm2kgsl)  echo "-Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,virtio" ;;
+        venus)     echo "-Dvulkan-drivers=virtio" ;;
         *) echo "unknown mesa variant: $1" >&2; return 1 ;;
     esac
 }
@@ -72,49 +83,36 @@ mesa_variant_pkg()  { echo "mesa-guest-$1"; }
 # rather than overwriting its files behind dpkg's back.
 #
 # mesa-guest-kgsl is the pre-rename name of the drm2kgsl package. It is listed because guests
-# provisioned before the rename still carry it, and a stale copy is not harmless: the two
-# variants share 60 install paths but not all of them, so the leftovers of the loser stay on
-# disk -- and something that picks a route by asking whether a file exists then picks the wrong
-# one. That is not hypothetical; the benchmark harness chose the drm2kgsl launcher under
-# gfxstream exactly that way.
+# provisioned before the rename still carry it, and a stale copy is not harmless: the variants
+# share 60 install paths but not all of them, so the leftovers of the loser stay on disk -- and
+# something that picks a route by asking whether a file exists then picks the wrong one. That is
+# not hypothetical; the benchmark harness chose the drm2kgsl launcher under gfxstream exactly
+# that way.
 mesa_variant_siblings() {
-    local self=$1 out=()
-    local all=(mesa-guest-gfxstream mesa-guest-drm2kgsl mesa-guest-kgsl mesa-guest-venus)
-    for p in "${all[@]}"; do
-        [ "$p" = "mesa-guest-$self" ] || out+=("$p")
+    local self=$1 v out=()
+    for v in "${MESA_VARIANTS[@]}" kgsl; do
+        [ "$v" = "$self" ] || out+=("mesa-guest-$v")
     done
     (IFS=,; echo "${out[*]}")
 }
 mesa_variant_icd()  {
     case $1 in
         gfxstream) echo "/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json" ;;
-        drm2kgsl)      echo "/usr/local/share/vulkan/icd.d/freedreno_icd.aarch64.json" ;;
-        venus)         echo "/usr/local/share/vulkan/icd.d/virtio_icd.aarch64.json" ;;
+        drm2kgsl)  echo "/usr/local/share/vulkan/icd.d/freedreno_icd.aarch64.json" ;;
+        venus)     echo "/usr/local/share/vulkan/icd.d/virtio_icd.aarch64.json" ;;
     esac
 }
 
-# mesa_worktree <variant> -- print the path to a checkout of that variant's branch, creating a
-# git worktree beside the main mesa/ checkout if needed. One clone, two trees: the branches share
-# no history, so a single checkout would have to be re-switched (and fully rebuilt) between them.
-mesa_worktree() {
-    local v=$1 br dir
-    br=$(mesa_variant_branch "$v") || return 1
-    dir="mesa-$v"
-    if [ ! -d "$dir" ]; then
-        git -C mesa fetch -q origin "$br:refs/remotes/origin/$br" 2>/dev/null || true
-        git -C mesa worktree add -f "../$dir" "$br" >&2
-    fi
-    echo "$dir"
-}
-
-# mesa_pkg_version <worktree> -- upstream mesa version + the commit it was built from, so a deb
+# mesa_pkg_version <checkout> -- upstream mesa version + the commit it was built from, so a deb
 # on a guest can be traced back to a tree. git is not usable inside the container (a worktree's
 # .git is a file naming an absolute host path), so this runs on the host and is passed in.
 #
 # A commit count leads and the hash only identifies. A hash does not order: "+droidvm.cea49934" is
 # LOWER than "+droidvm.f80a84b5" whichever was built first, so installing a newer build needed
 # --allow-downgrades and apt would happily keep the older one. A count of commits only goes up, on
-# a branch that is never rewritten.
+# a branch that is never rewritten. This is why a checkout handed to this function must carry the
+# FULL commit history (a shallow clone counts 1); ci-build.sh clones with --filter=tree:0, which
+# fetches every commit but no blobs beyond the ones checked out.
 #
 # The "r" is not decoration. Without it the new scheme would sort BELOW the old one already on
 # guests -- dpkg compares the letters of "cea49934" against the empty run in front of "250" and

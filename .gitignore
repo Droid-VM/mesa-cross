@@ -1,0 +1,8 @@
+# ci-build.sh: the mesa checkouts it clones and the output directory
+/mesa-gfxstream/
+/mesa-drm2kgsl/
+/mesa-venus/
+/out/
+# packages built anywhere in here
+*.deb
+*.env
