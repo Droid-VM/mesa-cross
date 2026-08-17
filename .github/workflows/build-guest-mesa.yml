@@ -1,9 +1,21 @@
 # Cross-build the guest mesa .debs from Droid-VM/mesa and publish them as a GitHub release.
 #
-# Manual only. Pick the mesa-cross branch in the "Use workflow from" box -- that decides which
-# recipe runs AND, unless `branch` is given, which mesa branch family is built: mesa-cross
-# wip/3d-accel builds Droid-VM/mesa wip/3d-accel-<variant>, exactly as the meta repo does for
-# its own branch (mesa-variants.sh: mesa_variant_branch).
+# Manual only, and TWO independent choices of branch:
+#
+#   "Use workflow from"   which mesa-cross ref provides the recipe (this file, build.sh,
+#                         mesa-variants.sh). Any branch or tag of this repo.
+#   `branch` input        which mesa BRANCH FAMILY to build: Droid-VM/mesa <family>-<variant>.
+#                         Left empty it follows the ref above, the same rule the meta repo
+#                         applies to its own branch (mesa-variants.sh: mesa_variant_branch).
+#
+# So a second line of work needs nothing added here. Either make a mesa-cross branch with the
+# same name and select it (mesa-cross pr/3d-accel -> mesa pr/3d-accel-venus), or stay on
+# wip/3d-accel and type `pr/3d-accel` in the `branch` box. Both build the same thing; the first
+# also lets the recipe itself differ per line, the second is one click.
+#
+# The requested branches are checked for existence before anything is built, so a typo or a
+# family whose mesa branch has not been pushed yet fails in seconds with the list of branches
+# that DO exist -- not twenty minutes into a container build.
 #
 # One job per variant, all in parallel, each in the same cross container the local build uses
 # (Dockerfile.mesa-cross, cached between runs). A release is created only when every requested
@@ -14,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'mesa branch family: builds Droid-VM/mesa <branch>-<variant>. Empty = the branch this workflow runs from.'
+        description: 'mesa branch family: builds Droid-VM/mesa <family>-<variant>, e.g. wip/3d-accel or pr/3d-accel. Empty = the ref this workflow runs from.'
         required: false
         default: ''
       variants:
@@ -58,6 +70,7 @@ jobs:
           IN_BRANCH: ${{ inputs.branch }}
           IN_VARIANTS: ${{ inputs.variants }}
           IN_TAG: ${{ inputs.tag }}
+          MESA_REPO: ${{ inputs.mesa_repo }}
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
@@ -78,6 +91,28 @@ jobs:
             echo "tag=$tag"
           } >> "$GITHUB_OUTPUT"
           echo "mesa family: $branch  variants: $variants  tag: $tag"
+
+          # Every requested <family>-<variant> must exist on the mesa remote before we spend a
+          # runner on it. A new line of work (pr/3d-accel) typically starts with only some of the
+          # three pushed, and the informative failure is "that branch is not there, here is what
+          # is" rather than a clone error inside a build job. ls-remote needs no clone and no
+          # token for a public repo; a private mesa would need one added here.
+          url=https://github.com/$MESA_REPO.git
+          if ! have=$(git ls-remote --heads "$url" "refs/heads/${branch}-*" | sed 's#.*refs/heads/##'); then
+            echo "::error::cannot read $url -- wrong mesa_repo, or a private repo (this step uses no token)"
+            exit 1
+          fi
+          missing=()
+          for v in $(jq -r '.[]' <<<"$variants"); do
+            grep -qx "${branch}-${v}" <<<"$have" || missing+=("${branch}-${v}")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::$MESA_REPO has no branch: ${missing[*]}"
+            echo "::error::branches in the '$branch' family: $(echo "${have:-(none)}" | tr '\n' ' ' | sed 's/ $//')"
+            echo "::error::push the missing branch, pick another family in the 'branch' input, or drop that variant"
+            exit 1
+          fi
+          echo "mesa branches: $(echo "$have" | tr '\n' ' ')"
 
   build:
     needs: plan

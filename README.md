@@ -51,14 +51,21 @@ git-shaped work:
 
 ## GitHub Actions
 
-**Actions → guest mesa → Run workflow.** Manual only.
+**Actions → guest mesa → Run workflow.** Manual only (`workflow_dispatch`).
 
-* *Use workflow from*: the mesa-cross branch. It selects the recipe **and**, if
-  `branch` is left empty, the mesa branch family — mesa-cross `wip/3d-accel`
-  builds mesa `wip/3d-accel-{gfxstream,drm2kgsl,venus}`, the same rule the meta
-  repo applies to its own branch.
-* `branch`: override the family (e.g. `wip/foo` → mesa `wip/foo-<variant>`).
+Two branch choices, and they are independent:
+
+* *Use workflow from* — which **mesa-cross** ref provides the recipe (this
+  workflow, `build.sh`, `mesa-variants.sh`). Any branch or tag of this repo.
+* `branch` — which **mesa branch family** to build: `Droid-VM/mesa`
+  `<family>-<variant>`. Left empty it follows the ref above, the same rule the
+  meta repo applies to its own branch.
+
+Inputs:
+
+* `branch`: the family, e.g. `wip/3d-accel` or `pr/3d-accel`.
 * `variants`: subset, space separated. Default all three.
+* `mesa_repo`: build a fork instead (`owner/name`).
 * `release` / `tag` / `prerelease`: publish the `.deb`s + `MD5SUMS` as a
   release. Default tag `mesa-guest-<family>-<run number>`; giving an existing
   tag updates that release in place. The release notes record the exact mesa
@@ -67,9 +74,39 @@ git-shaped work:
   (the arm64 -dev packages are otherwise frozen in the cache until the
   Dockerfile or `ubuntu.sources` changes).
 
-The three variants build in parallel; a release is only created when every
-requested variant succeeded, and the `.deb`s of a partial run remain available
-as workflow artifacts.
+The variants build in parallel; a release is only created when every requested
+variant succeeded, and the `.deb`s of a partial run remain available as workflow
+artifacts.
+
+### A second line of work
+
+Nothing needs adding here for a new branch family. Say the work moves to
+`pr/3d-accel`, with mesa branches `pr/3d-accel-{gfxstream,drm2kgsl,venus}` —
+either way works:
+
+* **Type the family.** Stay on mesa-cross `wip/3d-accel` and put `pr/3d-accel`
+  in the `branch` box. One click, and the recipe is the one the trunk uses.
+* **Branch mesa-cross too.** `git switch -c pr/3d-accel` here, push, and select
+  it in *Use workflow from* with `branch` left empty. Use this when the recipe
+  itself has to differ for that line (a new meson option, a fourth variant):
+  the workflow file that runs is the one on the selected branch.
+
+`workflow_dispatch` needs the workflow present on the **default branch** to be
+dispatchable at all, so keep it there (`wip/3d-accel` today) when you add
+branches.
+
+From the CLI, the same thing:
+
+```
+gh workflow run build-guest-mesa.yml -R Droid-VM/mesa-cross \
+  --ref wip/3d-accel \
+  -f branch=pr/3d-accel -f variants='venus' -f release=false
+```
+
+Before any container starts, the run checks that every requested
+`<family>-<variant>` exists on the mesa remote, and fails in seconds with the
+list of branches that family *does* have — a new line usually has only one or
+two of the three pushed, and that is the moment to find out.
 
 ## Versioning
 
