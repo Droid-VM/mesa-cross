@@ -1,31 +1,25 @@
 #!/bin/bash
-# Configure, build and package ONE guest mesa variant, inside the cross container. Single
-# implementation for every variant, so the routes cannot drift apart in how they are built.
+# Configure, build and package the guest mesa inside the cross container. One build, all three
+# Vulkan drivers (gfxstream, venus, freedreno-over-vdrm), so the routes cannot drift apart in how
+# they are built -- they no longer can, being the same binary.
 #
 # Bind mounts:
-#   /work/mesa  = the mesa checkout        /work/cross = this dir (recipe + mesa-variants.sh), READ-ONLY
+#   /work/mesa  = the mesa checkout        /work/cross = this dir (recipe + mesa-config.sh), READ-ONLY
 #   /work/deb   = where the .deb goes
 #
 # Nothing else is mounted, so a build cannot write anywhere except its own tree and the output
 # directory it was given.
 #
-#   build-in-container.sh <gfxstream|drm2kgsl|venus> <package-version>
+#   build-in-container.sh <package-version>
 set -e
-V=${1:?usage: build-in-container.sh <gfxstream|drm2kgsl|venus> <package-version>}
-PKGVER=${2:?missing package version}
+PKGVER=${1:?usage: build-in-container.sh <package-version>}
 CROSS=${WORK_CROSS:-/work/cross}
 DEBOUT=${WORK_DEBOUT:-/work/deb}
 SRC=${WORK_MESA:-/work/mesa}
-source "$CROSS/mesa-variants.sh"
+source "$CROSS/mesa-config.sh"
 
 cd "$SRC"
 
-pkg=$(mesa_variant_pkg "$V")
-# Naming the siblings, not just the shared virtual package, is what makes dpkg REMOVE the other
-# variant instead of refusing (Conflicts alone) or silently overwriting it (what --force-all did).
-# Conflicts + Replaces on a real package name is the "this supersedes that" pair.
-siblings=$(mesa_variant_siblings "$V")
-deb="${pkg}_${PKGVER}_arm64.deb"
 
 # Resolve every dependency against the arm64 packages only. Debian multiarch puts them in the
 # compiler's normal search path, so this is the whole of the cross setup -- no sysroot involved.
@@ -37,13 +31,13 @@ cross=(--cross-file "$CROSS/aarch64-linux-gnu.meson")
 [ -z "${MESA_CLEAN:-}" ] || rm -rf build-cross install-cross
 if [ -d build-cross ]; then
     meson setup --reconfigure build-cross "${cross[@]}" \
-        "${MESA_COMMON_MESON[@]}" $(mesa_variant_meson "$V")
+        "${MESA_MESON[@]}"
 else
     meson setup build-cross "${cross[@]}" \
-        "${MESA_COMMON_MESON[@]}" $(mesa_variant_meson "$V")
+        "${MESA_MESON[@]}"
 fi
 
-# The whole point of -Dglvnd=enabled is that all variants agree; a silent fallback to the
+# The whole point of -Dglvnd=enabled is a single agreed layout; a silent fallback to the
 # non-GLVND layout would put a differently-shaped libEGL in the guest and only show up later.
 grep -Eq 'GLVND[[:space:]]*:[[:space:]]*YES' build-cross/meson-logs/meson-log.txt || {
     echo "error: meson did not enable GLVND" >&2; exit 1; }
@@ -67,4 +61,4 @@ find install-cross -type f -name 'libEGL_mesa.so*' -print -quit | grep -q . || {
     echo "error: no libEGL_mesa.so -- GLVND layout missing" >&2; exit 1; }
 
 # Packaging is package.sh's job, from this one staged tree.
-exec bash "$CROSS/package.sh" "$V" "$PKGVER" "$PWD/install-cross" "$DEBOUT"
+exec bash "$CROSS/package.sh" "$PKGVER" "$PWD/install-cross" "$DEBOUT"

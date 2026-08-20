@@ -1,54 +1,50 @@
-# Cross-build the guest mesa .debs from Droid-VM/mesa and publish them as a GitHub release.
+# Cross-build the guest mesa .deb from Droid-VM/mesa and publish it as a GitHub release.
 #
 # Manual only, and TWO independent choices of branch:
 #
 #   "Use workflow from"   which mesa-cross ref provides the recipe (this file, build.sh,
-#                         mesa-variants.sh). Any branch or tag of this repo.
-#   `branch` input        which mesa BRANCH FAMILY to build: Droid-VM/mesa <family>-<variant>.
-#                         Left empty it follows the ref above, the same rule the meta repo
-#                         applies to its own branch (mesa-variants.sh: mesa_variant_branch).
+#                         mesa-config.sh). Any branch or tag of this repo.
+#   `branch` input        which Droid-VM/mesa BRANCH to build. Left empty it follows the ref
+#                         above, the same rule the meta repo applies to its own branch
+#                         (mesa-config.sh: mesa_branch).
 #
-# So a second line of work needs nothing added here. Either make a mesa-cross branch with the
-# same name and select it (mesa-cross pr/3d-accel -> mesa pr/3d-accel-venus), or stay on
-# wip/3d-accel and type `pr/3d-accel` in the `branch` box. Both build the same thing; the first
-# also lets the recipe itself differ per line, the second is one click.
+# So a second line of work needs nothing added here. Either make a mesa-cross branch with the same
+# name and select it, or stay on wip/3d-accel and type the mesa branch in the `branch` box. Both
+# build the same thing; the first also lets the recipe itself differ per line.
 #
-# The requested branches are checked for existence before anything is built, so a typo or a
-# family whose mesa branch has not been pushed yet fails in seconds with the list of branches
-# that DO exist -- not twenty minutes into a container build.
+# ONE build, ONE .deb. Until 2026-08-18 this ran three jobs in parallel, one per route, because
+# the routes lived on three mesa branches sitting on unrelated upstream commits. They now share a
+# branch and a binary: -Dvulkan-drivers=gfxstream,freedreno,virtio, with the route chosen at run
+# time by which ICD enumerates a device.
 #
-# One job per variant, all in parallel, each in the same cross container the local build uses
-# (Dockerfile.mesa-cross, cached between runs). A release is created only when every requested
-# variant built; the .debs of a partial run are still there as workflow artifacts.
+# The requested branch is checked for existence before anything is built, so a typo or a branch
+# that has not been pushed yet fails in seconds with the list of branches that DO exist -- not
+# twenty minutes into a container build.
 name: guest mesa
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'mesa branch family: builds Droid-VM/mesa <family>-<variant>, e.g. wip/3d-accel or pr/3d-accel. Empty = the ref this workflow runs from.'
+        description: 'Droid-VM/mesa branch to build, e.g. wip/3d-accel. Empty = the ref this workflow runs from.'
         required: false
         default: ''
-      variants:
-        description: 'which variants (space separated)'
-        required: false
-        default: 'gfxstream drm2kgsl venus'
       mesa_repo:
         description: 'mesa repository (owner/name)'
         required: false
         default: 'Droid-VM/mesa'
       release:
-        description: 'publish a release (off = artifacts only)'
+        description: 'publish a release (off = artifact only)'
         type: boolean
         default: true
       tag:
-        description: 'release tag. Empty = mesa-guest-<branch>-<run number>. An existing tag is updated in place.'
+        description: 'release tag. Empty = the branch name with / replaced by _ . An existing tag is updated in place.'
         required: false
         default: ''
       prerelease:
         description: 'mark the release as a pre-release'
         type: boolean
-        default: false
+        default: true
       refresh_env:
         description: 'rebuild the cross environment image from scratch (ignore the layer cache)'
         type: boolean
@@ -58,72 +54,52 @@ permissions:
   contents: write
 
 jobs:
-  plan:
+  build:
     runs-on: ubuntu-latest
     outputs:
       branch: ${{ steps.plan.outputs.branch }}
-      variants: ${{ steps.plan.outputs.variants }}
       tag: ${{ steps.plan.outputs.tag }}
     steps:
+      - uses: actions/checkout@v4
+
       - id: plan
         env:
           IN_BRANCH: ${{ inputs.branch }}
-          IN_VARIANTS: ${{ inputs.variants }}
           IN_TAG: ${{ inputs.tag }}
           MESA_REPO: ${{ inputs.mesa_repo }}
           REF_NAME: ${{ github.ref_name }}
-          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
           branch=${IN_BRANCH:-$REF_NAME}
-          # A variant suffix on the family name would double up (…-gfxstream-gfxstream); strip it
-          # the way mesa_base_branch does.
+          # A variant suffix left over from before the routes merged would name a branch that no
+          # longer exists; strip it the way mesa_branch does.
           branch=${branch%-gfxstream}; branch=${branch%-drm2kgsl}; branch=${branch%-kgsl}; branch=${branch%-venus}
-          variants=$(jq -cn --arg v "$IN_VARIANTS" '[$v | splits("[ ,]+") | select(length > 0)]')
-          for v in $(jq -r '.[]' <<<"$variants"); do
-            case $v in gfxstream|drm2kgsl|venus) ;; *) echo "::error::unknown variant '$v'"; exit 1 ;; esac
-          done
-          [ "$variants" != "[]" ] || { echo "::error::no variants selected"; exit 1; }
-          tag=${IN_TAG:-mesa-guest-${branch//\//-}-${RUN_NUMBER}}
+
+          # The tag IS the branch name. Git refuses a tag containing '/' when a branch of the same
+          # name exists (refs/tags/wip/3d-accel and refs/heads/wip/3d-accel cannot both be a
+          # directory and a file), so '/' becomes '_'. Re-running the workflow on a branch updates
+          # that one release rather than accumulating a release per run.
+          tag=${IN_TAG:-${branch//\//_}}
           {
             echo "branch=$branch"
-            echo "variants=$variants"
             echo "tag=$tag"
           } >> "$GITHUB_OUTPUT"
-          echo "mesa family: $branch  variants: $variants  tag: $tag"
+          echo "mesa branch: $branch  tag: $tag"
 
-          # Every requested <family>-<variant> must exist on the mesa remote before we spend a
-          # runner on it. A new line of work (pr/3d-accel) typically starts with only some of the
-          # three pushed, and the informative failure is "that branch is not there, here is what
-          # is" rather than a clone error inside a build job. ls-remote needs no clone and no
-          # token for a public repo; a private mesa would need one added here.
+          # The branch must exist on the mesa remote before we spend a runner on it. The
+          # informative failure is "that branch is not there, here is what is" rather than a clone
+          # error twenty minutes in. ls-remote needs no clone and no token for a public repo; a
+          # private mesa would need one added here.
           url=https://github.com/$MESA_REPO.git
-          if ! have=$(git ls-remote --heads "$url" "refs/heads/${branch}-*" | sed 's#.*refs/heads/##'); then
+          if ! have=$(git ls-remote --heads "$url" | sed 's#.*refs/heads/##'); then
             echo "::error::cannot read $url -- wrong mesa_repo, or a private repo (this step uses no token)"
             exit 1
           fi
-          missing=()
-          for v in $(jq -r '.[]' <<<"$variants"); do
-            grep -qx "${branch}-${v}" <<<"$have" || missing+=("${branch}-${v}")
-          done
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::$MESA_REPO has no branch: ${missing[*]}"
-            echo "::error::branches in the '$branch' family: $(echo "${have:-(none)}" | tr '\n' ' ' | sed 's/ $//')"
-            echo "::error::push the missing branch, pick another family in the 'branch' input, or drop that variant"
+          if ! grep -qx "$branch" <<<"$have"; then
+            echo "::error::$MESA_REPO has no branch '$branch'"
+            echo "::error::branches: $(echo "${have:-(none)}" | tr '\n' ' ' | sed 's/ $//')"
             exit 1
           fi
-          echo "mesa branches: $(echo "$have" | tr '\n' ' ')"
-
-  build:
-    needs: plan
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: ${{ fromJSON(needs.plan.outputs.variants) }}
-    name: build ${{ matrix.variant }}
-    steps:
-      - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
@@ -141,75 +117,67 @@ jobs:
           cache-from: type=gha,scope=mesa-cross-env
           cache-to: type=gha,mode=max,scope=mesa-cross-env,ignore-error=true
 
-      - name: build ${{ matrix.variant }}
+      - name: build
         env:
           MESA_NO_IMAGE_BUILD: '1'
           MESA_URL: https://github.com/${{ inputs.mesa_repo }}.git
         run: |
           set -euo pipefail
           {
-            echo "### ${{ matrix.variant }}"
-            echo
-            echo "| variant | mesa branch | commit | package |"
-            echo "|---|---|---|---|"
+            echo "| mesa branch | commit | package |"
+            echo "|---|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
-          ./ci-build.sh "${{ matrix.variant }}" "${{ needs.plan.outputs.branch }}" "$PWD/out"
+          ./ci-build.sh "${{ steps.plan.outputs.branch }}" "$PWD/out"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: deb-${{ matrix.variant }}
-          path: out/*.deb
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: info-${{ matrix.variant }}
-          path: out/*.env
+          name: mesa-guest-deb
+          path: |
+            out/*.deb
+            out/build.env
           if-no-files-found: error
 
   release:
-    needs: [plan, build]
+    needs: build
     if: ${{ success() && inputs.release }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: deb-*
-          merge-multiple: true
+          name: mesa-guest-deb
           path: dist
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: info-*
-          merge-multiple: true
-          path: info
 
-      - name: release notes + checksums
+      - name: release notes + checksum
         env:
-          BRANCH: ${{ needs.plan.outputs.branch }}
+          BRANCH: ${{ needs.build.outputs.branch }}
           MESA_REPO: ${{ inputs.mesa_repo }}
           RECIPE_SHA: ${{ github.sha }}
           RECIPE_REF: ${{ github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          # Same file lib_dist.sh writes next to the debs locally: scp into these guests has been
+          # shellcheck disable=SC1091
+          source dist/build.env
+          rm -f dist/build.env
+          # Same file lib_dist.sh writes next to the deb locally: scp into these guests has been
           # seen to truncate silently, and `md5sum -c MD5SUMS` on the far side is the cheapest way
           # to rule that out first.
           ( cd dist && md5sum ./*.deb > MD5SUMS )
           {
-            echo "Guest mesa for the DroidVM 3D-acceleration stack, cross-built for arm64 from \`$MESA_REPO\` branch family \`$BRANCH\`."
+            echo "Guest mesa for the DroidVM 3D-acceleration stack, cross-built for arm64 from \`$MESA_REPO\` branch \`$BRANCH\`."
             echo
-            echo "| variant | mesa branch | commit | package |"
-            echo "|---|---|---|---|"
-            for f in info/*.env; do
-              # shellcheck disable=SC1090
-              ( source "$f"; printf '| %s | `%s` | [`%s`](https://github.com/%s/commit/%s) | `%s` |\n' \
-                  "$VARIANT" "$MESA_BRANCH" "${MESA_COMMIT:0:8}" "$MESA_REPO" "$MESA_COMMIT" "$DEB" )
-            done
+            echo "| mesa branch | commit | package |"
+            echo "|---|---|---|"
+            printf '| `%s` | [`%s`](https://github.com/%s/commit/%s) | `%s` |\n' \
+                "$MESA_BRANCH" "${MESA_COMMIT:0:8}" "$MESA_REPO" "$MESA_COMMIT" "$DEB"
             echo
-            echo "One variant per guest -- they install to the same prefix and Conflict, so apt swaps them:"
+            echo "One package, all three routes -- gfxstream, venus and drm2kgsl. \`VK_DRIVER_FILES\` names"
+            echo "all three ICDs and the Vulkan loader keeps whichever one enumerates a device, which is the"
+            echo "one matching the virtio-gpu capset the VMM exposed. Installing it removes the old per-route"
+            echo "\`mesa-guest-*\` packages."
             echo
             echo '```'
-            echo 'sudo apt install ./mesa-guest-<variant>_*_arm64.deb'
+            echo 'sudo apt install ./mesa-guest_*_arm64.deb'
             echo 'md5sum -c MD5SUMS   # after copying: scp into these guests has truncated silently before'
             echo '```'
             echo
@@ -222,14 +190,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.plan.outputs.tag }}
-          TITLE: 'guest mesa ${{ needs.plan.outputs.branch }} #${{ github.run_number }}'
+          TAG: ${{ needs.build.outputs.tag }}
+          TITLE: 'guest mesa ${{ needs.build.outputs.branch }} #${{ github.run_number }}'
           PRERELEASE: ${{ inputs.prerelease }}
           TARGET: ${{ github.sha }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "updating existing release $TAG"
+            # The tag is the branch name, so this release is reused run after run -- but the .deb
+            # filename carries the version, and --clobber only replaces an asset of the SAME name.
+            # Without this, every previous run's .deb stays attached while MD5SUMS (same name, so
+            # it IS replaced) lists only the newest, and `apt install ./mesa-guest_*_arm64.deb`
+            # matches more than one file. Drop whatever this run is not about to upload.
+            gh release view "$TAG" --json assets -q '.assets[].name' | while read -r a; do
+              [ -e "dist/$a" ] || { echo "  removing stale asset $a"; gh release delete-asset "$TAG" "$a" -y; }
+            done
             gh release edit "$TAG" --title "$TITLE" --notes-file body.md --prerelease="$PRERELEASE"
             gh release upload "$TAG" --clobber dist/*
           else

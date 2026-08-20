@@ -1,7 +1,7 @@
 #!/bin/bash
-# Build ONE guest mesa variant from a checkout that already exists, and write the .deb.
+# Build the guest mesa from a checkout that already exists, and write the .deb.
 #
-#   build.sh <gfxstream|drm2kgsl|venus> <mesa-path> <version> <outdir>
+#   build.sh <mesa-path> <version> <outdir>
 #
 # This half knows nothing about git. It is handed a path, and whether that path is a worktree, a
 # clone, a symlink or a tarball extraction is not its business -- branch resolution and checkout
@@ -21,10 +21,9 @@
 #   BASE=<image>            base image for the environment (default ubuntu:26.04)
 #   MESA_CLEAN=1            throw the kept build dir away first (see build-in-container.sh)
 set -e
-V=${1:?usage: build.sh <gfxstream|drm2kgsl|venus> <mesa-path> <version> <outdir>}
-SRC=${2:?missing mesa path}
-VER=${3:?missing version}
-OUTDIR=${4:?missing outdir}
+SRC=${1:?usage: build.sh <mesa-path> <version> <outdir>}
+VER=${2:?missing version}
+OUTDIR=${3:?missing outdir}
 HERE=$(cd "$(dirname "$0")" && pwd)
 IMG=${MESA_IMG:-droidvm-mesa-cross}
 
@@ -46,9 +45,9 @@ else
         -f "$HERE/Dockerfile.mesa-cross" "$HERE"
 fi
 
-echo "==> cross-building mesa variant '$V'"
+echo "==> cross-building the guest mesa (gfxstream + venus + drm2kgsl)"
 # Three mounts, three roles: the source tree, this directory (the build recipe AND
-# mesa-variants.sh, the one place the variants' meson options are written down), and the output
+# mesa-config.sh, the one place the meson options are written down), and the output
 # directory. The .deb goes to its own mount so the output location is an argument rather than
 # "wherever the recipe happens to live".
 #
@@ -59,4 +58,4 @@ docker run --rm \
     -v "$SRC:/work/mesa" \
     -v "$HERE:/work/cross:ro" \
     -v "$OUTDIR:/work/deb" \
-    "$IMG" bash /work/cross/build-in-container.sh "$V" "$VER"
+    "$IMG" bash /work/cross/build-in-container.sh "$VER"
