@@ -1,0 +1,36 @@
+# Meson cross file: build aarch64 guest mesa from an x86_64 host (native x86
+# compiler emitting aarch64 code -- no qemu emulation). Paired with the arm64
+# multiarch environment set up in Dockerfile.mesa-cross (Ubuntu resolute so the
+# arm64 -dev libs match the guest's ABI). pkg-config is pointed at the arm64
+# .pc files via PKG_CONFIG_LIBDIR in the build script, so meson resolves every
+# dependency against /usr/lib/aarch64-linux-gnu.
+[binaries]
+c       = 'aarch64-linux-gnu-gcc'
+cpp     = 'aarch64-linux-gnu-g++'
+ar      = 'aarch64-linux-gnu-ar'
+strip   = 'aarch64-linux-gnu-strip'
+ld      = 'aarch64-linux-gnu-ld'
+nm      = 'aarch64-linux-gnu-nm'
+objcopy = 'aarch64-linux-gnu-objcopy'
+objdump = 'aarch64-linux-gnu-objdump'
+ranlib  = 'aarch64-linux-gnu-ranlib'
+readelf = 'aarch64-linux-gnu-readelf'
+pkg-config = 'pkg-config'
+# mesa forces method:config-tool for LLVM on Linux, and the llvm-config that
+# describes the arm64 LLVM is an arm64 ELF -- the wrapper runs it under qemu-user
+# (the build's single emulated binary; see aarch64-llvm-config).
+llvm-config = 'aarch64-llvm-config'
+# Host tools invoked at build time (codegen) run natively on x86:
+python  = 'python3'
+
+[host_machine]
+system     = 'linux'
+cpu_family = 'aarch64'
+cpu        = 'aarch64'
+endian     = 'little'
+
+[properties]
+# Cross pkg-config only ever looks at the arm64 packages.
+pkg_config_libdir = '/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig'
+# Skip run-time detection that would need to execute aarch64 binaries.
+needs_exe_wrapper = true

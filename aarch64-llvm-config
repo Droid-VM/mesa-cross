@@ -1,0 +1,21 @@
+#!/bin/sh
+# llvm-config for the CROSS build: the arm64 llvm-config run under qemu-user.
+#
+# mesa's meson hard-codes method:config-tool for LLVM on non-Windows, so a runnable
+# llvm-config describing the TARGET's LLVM is the only way in -- and the target's
+# llvm-config is an arm64 ELF. This is the one and only place the build runs emulated
+# code: a config query at meson-setup time, milliseconds, not compilation. Everything
+# it prints (includedir, libdir, -lLLVM-21) describes the arm64 multiarch packages,
+# which is exactly what the cross linker needs to see.
+#
+# The amd64 llvm-config is NOT a substitute even wrapped: its llvm-config.h says
+# LLVM_NATIVE_ARCH=X86, and gallivm's LLVMInitializeNativeTarget() expands against
+# that at compile time -- it would build an llvmpipe that JITs for the wrong CPU.
+set -e
+for c in /usr/bin/llvm-config-21 /usr/lib/llvm-21/bin/llvm-config; do
+    if [ -x "$c" ]; then
+        exec qemu-aarch64 "$c" "$@"
+    fi
+done
+echo "aarch64-llvm-config: no arm64 llvm-config-21 found (is llvm-21-dev:arm64 installed?)" >&2
+exit 1
