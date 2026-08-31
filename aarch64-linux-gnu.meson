@@ -16,6 +16,10 @@ objdump = 'aarch64-linux-gnu-objdump'
 ranlib  = 'aarch64-linux-gnu-ranlib'
 readelf = 'aarch64-linux-gnu-readelf'
 pkg-config = 'pkg-config'
+# mesa forces method:config-tool for LLVM on Linux, and the llvm-config that
+# describes the arm64 LLVM is an arm64 ELF -- the wrapper runs it under qemu-user
+# (the build's single emulated binary; see aarch64-llvm-config).
+llvm-config = 'aarch64-llvm-config'
 # Host tools invoked at build time (codegen) run natively on x86:
 python  = 'python3'
 

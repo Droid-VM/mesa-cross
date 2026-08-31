@@ -30,14 +30,26 @@
 # -Dgallium-drivers=zink: the desktop composites through gallium, on top of whichever Vulkan
 # driver answered. Without it GNOME Shell reports "virtio_gpu: driver missing", falls back to
 # kms_swrast and dies with "No GPUs found" while Vulkan works the whole time.
+#
+# llvmpipe rides along because this package SHADOWS the distro mesa without falling back to it:
+# /usr/local's GLVND vendor libs win the ld.so search, and post-dril mesa carries its drivers
+# inside its own libgallium -- there is no path from our libGLX_mesa to the distro's software
+# renderer. On a guest with no paravirt GPU (simplefb-only display, so no virtio-gpu and no
+# render node) zink has no Vulkan device under it, GLX offers zero FBConfigs, and the greeter
+# crash-loops ("Could not initialize GLX", sddm restarting the display forever). llvmpipe is
+# the in-package software fallback that used to come from the distro build. Whether the zink
+# override or the llvmpipe fallback is active on a given boot is decided by the packaged
+# mesa-guest-env service (see package.sh), not at build time. -Dllvm=enabled makes a build
+# where LLVM went missing fail at setup instead of quietly dropping llvmpipe.
 MESA_MESON=(
     --buildtype release
     --prefix /usr/local
     --libdir lib/aarch64-linux-gnu
     -Dplatforms=x11,wayland
-    -Dgallium-drivers=zink
+    -Dgallium-drivers=zink,llvmpipe
     -Dvulkan-drivers=gfxstream,freedreno,virtio
     -Dfreedreno-kmds=msm,virtio
+    -Dllvm=enabled
     -Dopengl=true -Dgbm=enabled -Dglx=dri -Degl=enabled
     -Dglvnd=enabled
     -Dshader-cache-default=true

@@ -45,57 +45,59 @@ siblings=$(mesa_supersedes_list)
 icd=$(mesa_icd_list)
 
 # ---------------------------------------------------------------------------
-# Environment, delivered through FOUR channels because no single one reaches every entry point.
+# Environment, decided at BOOT and delivered through four channels, because no single channel
+# reaches every entry point and no static file can ask whether the guest has a GPU.
 #
-#   /usr/lib/environment.d          systemd USER sessions -- GNOME, and the gdm greeter, which is one
-#   /etc/profile.d                  login shells
+# The DECISION is new. The zink override and the pinned VK_DRIVER_FILES used to be shipped
+# unconditionally, and on a guest with no paravirt GPU (simplefb-only display: no virtio-gpu,
+# no render node, so none of our three ICDs can enumerate a device) they were the failure:
+# zink had no Vulkan under it, GLX offered zero FBConfigs, and sddm restarted its greeter
+# forever ("Could not initialize GLX", HelperExitStatus 6) -- while systemd reported zero
+# failed units. The build now carries llvmpipe precisely for that guest, but llvmpipe only
+# gets a chance if the override is NOT set. So mesa-guest-env.service runs once per boot,
+# probes for a GPU (a virtio device with id 16 in /sys -- present as soon as virtio-pci
+# binds, whether or not virtio_gpu is loaded -- or any render node, for bare-metal msm), and
+# either applies the zink environment or clears it. Add the GPU to the VM and the next boot
+# re-applies everything; no reinstall, nothing to remember.
+#
+#   probe result            GL stack that boots
+#   GPU present             zink on gfxstream/venus/turnip (as before)
+#   no GPU                  llvmpipe from this package, software but alive
+#
+# The four channels, and why each exists (measured the hard way -- see git history for the
+# greeter-crash matrix that produced them):
+#
+#   user-environment-generators     systemd USER sessions -- GNOME, and the gdm greeter, which is
+#                                   one. Was a static environment.d file; a generator is the same
+#                                   channel with an if in front.
+#   /etc/profile.d                  login shells. The shipped script tests the boot flag.
 #   /etc/environment                PAM sessions, via pam_env -- notably display-manager greeters
-#                                   that are NOT systemd user sessions
-#   /usr/lib/systemd/system.conf.d  systemd SYSTEM services -- notably the X server, which a display
-#                                   manager spawns itself rather than through PAM
+#                                   that are NOT systemd user sessions (sddm-helper rebuilds its
+#                                   env, so neither environment.d nor sddm.service.d reaches it).
+#                                   pam_env has no drop-in directory and no conditionals, so the
+#                                   boot service edits a marked block in place.
+#   systemctl set-environment       systemd SYSTEM services -- above all the X server, which a
+#                                   display manager spawns itself rather than through PAM: without
+#                                   the override glamor fails and GLX offers the greeter no
+#                                   FBConfig it will accept. Was a static system.conf.d
+#                                   DefaultEnvironment= drop-in; set-environment is its runtime
+#                                   equivalent, applied before display-manager.service starts,
+#                                   and needs no daemon-reexec to take effect.
 #
-# The third was added after a black screen on KDE/sddm. sddm spawns its greeter from sddm-helper
-# through PAM, not through `systemd --user`, so environment.d never reached it. Measured on the
-# guest, greeter environment / crash count:
-#
-#   environment.d only            no MESA_LOADER_DRIVER_OVERRIDE, crash loop
-#   + sddm.service.d Environment= still none (sddm-helper rebuilds the env), crash loop
-#   + /etc/environment            present, crashes 3 -> 0, login screen renders
-#
-# The fourth closes what that left open. Giving the GREETER the override fixes the client half; the
-# X SERVER is a different process, spawned by the sddm daemon directly, and it never saw any of the
-# three. So glamor kept failing and GLX kept falling back to software, which offers the greeter no
-# FBConfig it will accept -- "qglx_findConfig: Failed to finding matching FBConfig", "Could not
-# initialize GLX", exit 6, and sddm restarts the display forever. Logging in still worked, because
-# autologin goes straight to a Wayland session and never starts an X server; only logging back out
-# reached it. Same X server, same command line, only the environment differing:
-#
-#   without   couldn't get display device / glamor initialization failed
-#             AIGLX: Screen 0 is not DRI2 capable / GLX: Initialized DRISWRAST GL provider
-#   with      glamor initialized
-#             AIGLX: Loaded and initialized zink / GLX: Initialized DRI2 GL provider
-#
-# system.conf.d rather than a drop-in per display manager: the note above records that sddm's own
-# service environment does not reach its greeter, so a per-DM drop-in would have to be written for
-# each DM and would still only be half the answer. DefaultEnvironment is the system-service
-# counterpart of /etc/environment, and it does not care which DM is installed.
-#
-# MESA_LOADER_DRIVER_OVERRIDE is not a tuning knob. The build is
-# -Dgallium-drivers=zink, so nothing in dri/ is named for the guest's kernel driver, and
-# pipe_loader asks for one named "virtio_gpu". Without the override it finds nothing:
-# "QGLXContext: Failed to create dummy context", and whatever needed GL dies.
+# MESA_LOADER_DRIVER_OVERRIDE is not a tuning knob. Nothing in dri/ is named for the guest's
+# kernel driver, and pipe_loader asks for one named "virtio_gpu". Without the override it finds
+# nothing: "QGLXContext: Failed to create dummy context", and whatever needed GL dies.
 #
 # VK_DRIVER_FILES lists all three of our ICDs. It keeps the distro's software ICDs (lavapipe) out
 # of the enumeration -- an app quietly choosing llvmpipe is slow rather than broken, which is the
 # hardest kind of regression to notice -- and it is also how the route gets chosen now: the loader
 # initialises each in turn and the ones whose capset the VMM did not expose enumerate no device.
+# On a GPU-less boot it is left unset, and software Vulkan (the distro's lavapipe, if installed)
+# stays reachable.
 #
-# /etc/environment IS the admin's file, and that is why it is edited from the maintainer scripts
-# inside named markers rather than shipped: postinst strips every mesa-guest block before adding
-# its own, postrm strips its own on removal, so nothing this package did not write is ever touched
-# and nothing it wrote is ever left behind. pam_env has no drop-in directory -- it reads only
-# /etc/environment and /etc/security/pam_env.conf, both conffiles of other packages -- so there is
-# no way to reach a PAM session without touching one of them.
+# /etc/environment IS the admin's file, and that is why it is edited inside named markers rather
+# than shipped: every writer strips every mesa-guest block before adding its own, so nothing this
+# package did not write is ever touched and nothing it wrote is ever left behind.
 # ---------------------------------------------------------------------------
 #
 # NO KWIN_FORCE_SW_CURSOR here, deliberately. It was shipped for a while because the guest's
@@ -105,30 +107,131 @@ icd=$(mesa_icd_list)
 # workaround would do active harm: it stops KWin ever using the cursor plane, which makes the
 # hardware path look broken and hides any regression in it. It also only ever helped Linux
 # compositors -- Windows' virtio-gpu driver and UEFI have no equivalent knob.
-install -d -m 0755 "$STAGE/usr/lib/environment.d" "$STAGE/etc/profile.d" \
-                   "$STAGE/usr/lib/systemd/system.conf.d"
-cat > "$STAGE/usr/lib/environment.d/50-mesa-guest.conf" <<EOF
-# Installed by ${pkg}. See /usr/share/doc/${pkg}.
+install -d -m 0755 "$STAGE/usr/lib/mesa-guest" "$STAGE/etc/profile.d" \
+                   "$STAGE/usr/lib/systemd/system" "$STAGE/usr/lib/systemd/system/multi-user.target.wants" \
+                   "$STAGE/usr/lib/systemd/user-environment-generators"
+
+# The probe and both of its consequences, in one place. Also what postinst runs -- installing is
+# just "a boot happened now".
+cat > "$STAGE/usr/lib/mesa-guest/mesa-guest-env" <<EOF
+#!/bin/sh
+# Installed by ${pkg}. Runs from mesa-guest-env.service once per boot (and from postinst):
+# probes for a GPU our ICDs can drive and applies or clears the zink environment accordingly.
+# GPU-less guests then fall through to this package's llvmpipe instead of crash-looping the
+# greeter. MESA_GUEST_FORCE_GPU=1/0 overrides the probe, for testing either branch.
+set -e
+
+FLAG=/run/mesa-guest-gpu
+
+gpu_present() {
+    case "\${MESA_GUEST_FORCE_GPU:-}" in 1) return 0 ;; 0) return 1 ;; esac
+    # A virtio device with id 16 (GPU). Read from the virtio bus, not /dev/dri: the bus entry
+    # appears when virtio-pci binds (initramfs, long before this service), while the render node
+    # waits for the virtio_gpu module -- a DKMS module here, so possibly still being loaded.
+    for m in /sys/bus/virtio/devices/*/modalias; do
+        [ -r "\$m" ] || continue
+        case \$(cat "\$m") in virtio:d00000010*) return 0 ;; esac
+    done
+    # Bare metal (-Dfreedreno-kmds=msm builds run there too): any render node counts.
+    for r in /dev/dri/renderD*; do
+        [ -e "\$r" ] && return 0
+    done
+    return 1
+}
+
+# Built beside the target and renamed over it, never appended to in place. An append that is
+# interrupted -- the VM losing power, which on this platform means the VMM crashing -- leaves the
+# file extended to its new length with the tail unwritten, which on ext4 reads back as NUL bytes.
+# pam_env then refuses the whole file, and the one channel that reaches a display manager's PAM
+# session goes silent while the others stay correct. Seen exactly that.
+write_environment() {
+    umask 022
+    if [ -f /etc/environment ]; then
+        sed '/^# BEGIN mesa-guest/,/^# END mesa-guest/d' /etc/environment > /etc/environment.mesa-guest-new
+    else
+        : > /etc/environment.mesa-guest-new
+    fi
+    if [ "\$1" = gpu ]; then
+        cat >> /etc/environment.mesa-guest-new <<'BLOCK'
+# BEGIN mesa-guest (managed by mesa-guest-env at boot; edits inside this block are lost)
 MESA_LOADER_DRIVER_OVERRIDE=zink
 VK_DRIVER_FILES=${icd}
 VK_ICD_FILENAMES=${icd}
+# END mesa-guest
+BLOCK
+    fi
+    sync /etc/environment.mesa-guest-new 2>/dev/null || true
+    mv -f /etc/environment.mesa-guest-new /etc/environment
+}
+
+if gpu_present; then
+    write_environment gpu
+    : > "\$FLAG"
+    if [ -d /run/systemd/system ]; then
+        systemctl set-environment \\
+            MESA_LOADER_DRIVER_OVERRIDE=zink \\
+            "VK_DRIVER_FILES=${icd}" \\
+            "VK_ICD_FILENAMES=${icd}"
+    fi
+    echo "mesa-guest-env: GPU present, zink environment applied"
+else
+    write_environment none
+    rm -f "\$FLAG"
+    if [ -d /run/systemd/system ]; then
+        systemctl unset-environment MESA_LOADER_DRIVER_OVERRIDE VK_DRIVER_FILES VK_ICD_FILENAMES
+    fi
+    echo "mesa-guest-env: no GPU, zink environment cleared (llvmpipe fallback)"
+fi
 EOF
+chmod 0755 "$STAGE/usr/lib/mesa-guest/mesa-guest-env"
+
+cat > "$STAGE/usr/lib/systemd/system/mesa-guest-env.service" <<EOF
+[Unit]
+Description=Droid-VM guest GPU environment (zink when a GPU is present, llvmpipe otherwise)
+# Both audiences start later: PAM logins are gated by systemd-user-sessions.service (so they
+# read the /etc/environment this writes), and the display manager -- whose X server inherits
+# the manager environment set here -- by display-manager.service. The probe reads the virtio
+# bus in /sys, populated by the initramfs, so no udev settling is needed.
+Before=systemd-user-sessions.service display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/mesa-guest/mesa-guest-env
+
+[Install]
+WantedBy=multi-user.target
+EOF
+# Enabled by shipped symlink rather than postinst `systemctl enable`: static enablement cannot
+# drift, survives without debhelper, and dpkg removes it with the package.
+ln -s ../mesa-guest-env.service \
+      "$STAGE/usr/lib/systemd/system/multi-user.target.wants/mesa-guest-env.service"
+
+# The systemd-user-session channel. A generator instead of a static environment.d file -- same
+# audience, but it can test the flag. It runs at every \`systemd --user\` startup, which is after
+# the boot service by the ordering above.
+cat > "$STAGE/usr/lib/systemd/user-environment-generators/50-mesa-guest" <<EOF
+#!/bin/sh
+# Installed by ${pkg}. Emits the zink environment iff this boot's GPU probe said so.
+[ -e /run/mesa-guest-gpu ] || exit 0
+cat <<'GEN'
+MESA_LOADER_DRIVER_OVERRIDE=zink
+VK_DRIVER_FILES=${icd}
+VK_ICD_FILENAMES=${icd}
+GEN
+EOF
+chmod 0755 "$STAGE/usr/lib/systemd/user-environment-generators/50-mesa-guest"
+
 cat > "$STAGE/etc/profile.d/50-mesa-guest.sh" <<EOF
-# Installed by ${pkg}.
-export MESA_LOADER_DRIVER_OVERRIDE=zink
-export VK_DRIVER_FILES=${icd}
-export VK_ICD_FILENAMES=${icd}
+# Installed by ${pkg}. The flag is written at boot by mesa-guest-env.service iff a paravirt
+# GPU is present; without it the variables stay unset and GL falls back to llvmpipe.
+if [ -e /run/mesa-guest-gpu ]; then
+    export MESA_LOADER_DRIVER_OVERRIDE=zink
+    export VK_DRIVER_FILES=${icd}
+    export VK_ICD_FILENAMES=${icd}
+fi
 EOF
-# Under /usr/lib, not /etc: systemd reads system.conf.d from both, and the vendor path keeps this a
-# plain packaged file instead of something the maintainer scripts have to edit and unpick.
-cat > "$STAGE/usr/lib/systemd/system.conf.d/50-mesa-guest.conf" <<EOF
-# Installed by ${pkg}. Reaches system services -- above all the X server a display manager starts,
-# which needs the override for glamor and therefore for hardware GLX.
-[Manager]
-DefaultEnvironment=MESA_LOADER_DRIVER_OVERRIDE=zink VK_DRIVER_FILES=${icd} VK_ICD_FILENAMES=${icd}
-EOF
-chmod 0644 "$STAGE/usr/lib/environment.d/50-mesa-guest.conf" "$STAGE/etc/profile.d/50-mesa-guest.sh" \
-           "$STAGE/usr/lib/systemd/system.conf.d/50-mesa-guest.conf"
+chmod 0644 "$STAGE/etc/profile.d/50-mesa-guest.sh"
 
 root=$(mktemp -d)/deb
 mkdir -p "$root"; cp -a "$STAGE/." "$root/"
@@ -141,77 +244,63 @@ Priority: optional
 Architecture: arm64
 Installed-Size: $(du -sk "$root" | cut -f1)
 Maintainer: Droid-VM <noreply@github.com>
-Depends: libc6, libdrm2, libexpat1, libgcc-s1, libglvnd0, libstdc++6, libudev1, libvulkan1, libwayland-client0, libwayland-egl1, libwayland-server0, libx11-6, libx11-xcb1, libxcb1, libxcb-dri2-0, libxcb-dri3-0, libxcb-glx0, libxcb-present0, libxcb-randr0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxdamage1, libxext6, libxrandr2, libxshmfence1, libxxf86vm1, libzstd1, zlib1g
+Depends: libc6, libdrm2, libexpat1, libgcc-s1, libglvnd0, libllvm21, libstdc++6, libudev1, libvulkan1, libwayland-client0, libwayland-egl1, libwayland-server0, libx11-6, libx11-xcb1, libxcb1, libxcb-dri2-0, libxcb-dri3-0, libxcb-glx0, libxcb-present0, libxcb-randr0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxdamage1, libxext6, libxrandr2, libxshmfence1, libxxf86vm1, libzstd1, zlib1g
 Conflicts: ${siblings}
 Replaces: ${siblings}
 Description: Guest Mesa for Droid-VM (gfxstream, venus and drm2kgsl)
  Mesa guest libraries carrying all three DroidVM Vulkan drivers -- gfxstream,
- venus (virtio) and freedreno over vdrm -- plus the Zink Gallium driver and
- the GLVND vendor libraries. The route is chosen at run time: VK_DRIVER_FILES
- names all three ICDs and the loader keeps whichever one enumerates a device,
- which on a DroidVM guest is the one matching the virtio-gpu capset the VMM
- exposed. Installs to /usr/local, and ships the environment it
- needs in /usr/lib/environment.d, /etc/profile.d, /usr/lib/systemd/system.conf.d
- and a marked block in /etc/environment, so a desktop comes up without any manual
- setup. The last two are the ones that reach a display manager: its greeter runs
- as a PAM session rather than a systemd user session, and the X server it starts
- is a system service that sees neither.
+ venus (virtio) and freedreno over vdrm -- plus the Zink Gallium driver, an
+ llvmpipe software fallback and the GLVND vendor libraries. The route is chosen
+ at run time: mesa-guest-env.service probes at boot for a GPU the ICDs can
+ drive; when one is present it applies the zink environment and VK_DRIVER_FILES
+ names all three ICDs, with the loader keeping whichever one enumerates a
+ device -- the one matching the virtio-gpu capset the VMM exposed. On a guest
+ with no paravirt GPU (simplefb-only display) the environment is cleared
+ instead and the desktop comes up on llvmpipe, software but alive. Installs to
+ /usr/local; the environment travels through a user-environment-generator,
+ /etc/profile.d, a marked block in /etc/environment and systemctl
+ set-environment, the last two being what reach a display manager: its greeter
+ runs as a PAM session rather than a systemd user session, and the X server it
+ starts is a system service that sees neither.
  .
  Supersedes the per-route mesa-guest-gfxstream, mesa-guest-venus, mesa-guest-drm2kgsl
  and mesa-guest-kgsl packages, which installed to the same prefix.
 EOF
-# sed -i on /etc/environment, with the block delimited by markers. postinst strips EVERY
-# mesa-guest block before appending its own, so a guest upgrading from one of the old per-route
-# packages converges whichever order dpkg runs the scripts in; postrm strips only this package's
-# own block.
+# The /etc/environment editing (markers, strip-every-block-first, rename-over-write) lives in
+# mesa-guest-env now; postinst just runs it, so install-time and boot-time behavior cannot drift.
 cat > "$root/DEBIAN/postinst" <<EOF
 #!/bin/sh
 set -e
 ldconfig
 [ "\$1" = configure ] || exit 0
-# pam_env reads /etc/environment, and a display-manager greeter is a PAM session rather than a
-# systemd user session -- this is the only channel that reaches one.
-# Built beside the target and renamed over it, never appended to in place. An append that is
-# interrupted -- the VM losing power, which on this platform means the VMM crashing -- leaves the
-# file extended to its new length with the tail unwritten, which on ext4 reads back as NUL bytes.
-# pam_env then refuses the whole file, and the one channel that reaches a display manager's PAM
-# session goes silent while the other three stay correct. Seen exactly that: a desktop with no
-# driver override, on a guest whose environment.d and system.conf.d were both intact.
-umask 022
-if [ -f /etc/environment ]; then
-    sed '/^# BEGIN mesa-guest/,/^# END mesa-guest/d' /etc/environment > /etc/environment.dpkg-new
-else
-    : > /etc/environment.dpkg-new
-fi
-cat >> /etc/environment.dpkg-new <<'ENVEOF'
-# BEGIN mesa-guest (managed by ${pkg}; edits inside this block are lost on upgrade)
-MESA_LOADER_DRIVER_OVERRIDE=zink
-VK_DRIVER_FILES=${icd}
-VK_ICD_FILENAMES=${icd}
-# END mesa-guest
-ENVEOF
-sync /etc/environment.dpkg-new 2>/dev/null || true
-mv -f /etc/environment.dpkg-new /etc/environment
-# DefaultEnvironment is manager configuration, so PID 1 only picks up the file we just installed on
-# re-exec; daemon-reload does not re-read system.conf. Without this the display manager keeps the
-# environment it was started with until the next boot, which is exactly the case that was broken.
-# Not fatal if it fails -- a reboot has the same effect -- so never fail the install over it.
 if [ -d /run/systemd/system ]; then
+    # Older versions delivered the override to system services through a static system.conf.d
+    # DefaultEnvironment= drop-in. On upgrade dpkg has already deleted the file, but PID 1 still
+    # holds what it said -- daemon-reexec is the only thing that drops it (daemon-reload does not
+    # re-read system.conf). Also re-reads our unit file. Not fatal -- a reboot has the same
+    # effect -- so never fail the install over it.
     systemctl daemon-reexec || echo "${pkg}: systemctl daemon-reexec failed; reboot to apply" >&2
 fi
+# The same probe-and-apply the boot service runs: installing is just "a boot happened now".
+# A GPU-less guest gets its stale zink block stripped right here, not at next reboot.
+/usr/lib/mesa-guest/mesa-guest-env
 EOF
 cat > "$root/DEBIAN/postrm" <<EOF
 #!/bin/sh
 set -e
 ldconfig
 case "\$1" in remove|purge) ;; *) exit 0 ;; esac
+# mesa-guest-env is already deleted by the time postrm runs, so its cleanup half is inlined:
+# strip the marked block, drop the boot flag, and clear the manager environment it set.
 if [ -f /etc/environment ]; then
     sed '/^# BEGIN mesa-guest/,/^# END mesa-guest/d' /etc/environment \
         > /etc/environment.dpkg-new && mv -f /etc/environment.dpkg-new /etc/environment
 fi
-# dpkg has removed our system.conf.d drop-in, but PID 1 still holds what it said -- including a
-# VK_DRIVER_FILES naming an ICD that no longer exists. Drop it the same way postinst applied it.
+rm -f /run/mesa-guest-gpu
 if [ -d /run/systemd/system ]; then
+    systemctl unset-environment MESA_LOADER_DRIVER_OVERRIDE VK_DRIVER_FILES VK_ICD_FILENAMES 2>/dev/null || true
+    # A guest that skipped straight from a static-drop-in version to removal still has PID 1
+    # holding that DefaultEnvironment; reexec drops it. Harmless otherwise.
     systemctl daemon-reexec || true
 fi
 exit 0
