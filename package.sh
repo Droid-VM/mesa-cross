@@ -233,6 +233,41 @@ fi
 EOF
 chmod 0644 "$STAGE/etc/profile.d/50-mesa-guest.sh"
 
+# ---------------------------------------------------------------------------
+# The other way to hand a greeter a GLX with zero FBConfigs, and it is not an environment at all.
+#
+# A guest configured with BOTH `--simplefb` and `--gpu` has two DRM devices: simpledrm on the
+# platform framebuffer and virtio-gpu on PCI. Xorg's autoconfiguration adds every DRM device it
+# finds, the first as the screen and the rest as GPU screens, so modesetting loads glamor a second
+# time for simpledrm -- where the only GL is llvmpipe. It says so ("Refusing to try glamor on
+# llvmpipe", "glamor initialization failed") and carries on, but the server that comes up has no
+# FBConfigs left: glxinfo reports "couldn't find RGB GLX visual or fbconfig" and zero configs,
+# every GL client dies, and sddm loops its greeter forever on "Could not initialize GLX" with
+# HelperExitStatus 6 -- the same signature as the GPU-less guest above, from the opposite cause,
+# and with both screens black because nothing ever finishes a frame. Measured A/B on one boot:
+# 0 FBConfigs with the GPU screen, 432 and direct rendering on zink/Turnip without it.
+#
+# simpledrm is never something to render on here. It is the boot framebuffer -- UEFI and early
+# kernel write it, and after that the desktop belongs to virtio-gpu -- so the second device is
+# not a GPU to offload to and Xorg must not treat it as one.
+#
+# Unconditional because it is a no-op in every configuration that is not this one: with only a
+# virtio-gpu, or only a simplefb, there is no second device to add, and the sole device becomes
+# the screen rather than a GPU screen either way. Nothing here can turn a working guest off.
+install -d -m 0755 "$STAGE/etc/X11/xorg.conf.d"
+cat > "$STAGE/etc/X11/xorg.conf.d/20-mesa-guest-no-autoaddgpu.conf" <<EOF
+# Installed by ${pkg}. See the comment in mesa-cross/package.sh.
+#
+# With --simplefb and --gpu both configured the guest has two DRM devices, and Xorg would add
+# simpledrm as a secondary GPU screen. glamor cannot initialize on it (llvmpipe), which leaves
+# the server with zero GLX FBConfigs and crash-loops the display manager's greeter. simpledrm is
+# the boot framebuffer, not a GPU to render on; the desktop belongs to virtio-gpu.
+Section "ServerFlags"
+    Option "AutoAddGPU" "off"
+EndSection
+EOF
+chmod 0644 "$STAGE/etc/X11/xorg.conf.d/20-mesa-guest-no-autoaddgpu.conf"
+
 root=$(mktemp -d)/deb
 mkdir -p "$root"; cp -a "$STAGE/." "$root/"
 install -d -m 0755 "$root/DEBIAN"
@@ -256,7 +291,9 @@ Description: Guest Mesa for Droid-VM (gfxstream, venus and drm2kgsl)
  names all three ICDs, with the loader keeping whichever one enumerates a
  device -- the one matching the virtio-gpu capset the VMM exposed. On a guest
  with no paravirt GPU (simplefb-only display) the environment is cleared
- instead and the desktop comes up on llvmpipe, software but alive. Installs to
+ instead and the desktop comes up on llvmpipe, software but alive. A guest with
+ both a simplefb and a GPU gets an Xorg drop-in as well, keeping the server off
+ the simpledrm device it would otherwise add as a GL-less GPU screen. Installs to
  /usr/local; the environment travels through a user-environment-generator,
  /etc/profile.d, a marked block in /etc/environment and systemctl
  set-environment, the last two being what reach a display manager: its greeter
